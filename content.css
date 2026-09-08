@@ -65,13 +65,44 @@
 .bwl-bar button.bwl-primary:hover,
 .bwl-modal button.bwl-primary:hover { background: #ff8d3d; }
 
-.bwl-status {
+.bwl-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
   padding: 8px 24px;
-  color: #9a9a9a;
   font-size: 13px;
   min-height: 20px;
 }
+.bwl-status { color: #9a9a9a; }
 .bwl-status.bwl-error { color: #ff6b6b; }
+.bwl-eta { color: #f47521; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bwl-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: #8a8a8a;
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+.bwl-link:hover { color: #fff; }
+.bwl-link[hidden] { display: none; }
+.bwl-log-wrap { padding: 0 24px 4px; }
+.bwl-log-wrap[hidden] { display: none; }
+.bwl-log {
+  height: 132px;
+  overflow-y: auto;
+  background: #101114;
+  border: 1px solid #23252b;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: #8f9399;
+  white-space: pre;
+}
+.bwl-log-line { overflow: hidden; text-overflow: ellipsis; }
+.bwl-log-fail { color: #ffb347; }
 
 .bwl-progress { height: 3px; background: #23252b; }
 .bwl-progress > div { height: 100%; background: #f47521; transition: width 0.2s; }

@@ -29,7 +29,7 @@ Crunchyroll's "Recent Activity" sort bumps a show whenever *anything* about it c
 - Ranks shows by the newest unwatched episode's arrival date and renders its own grid over the watchlist page. Each card links to that exact episode in the language shown.
 - Remembers that you had the overlay open. Click an episode, watch it, come back to the watchlist by any route, and the overlay is there again with your progress refreshed.
 - In the player, watches for Crunchyroll's "Skip Intro", "Skip Recap" and "Skip Credits" buttons and clicks the ones you have enabled as soon as they become visible. No seeking of its own, so it can only skip what Crunchyroll has marked.
-- Caches episode lists for 12 hours, so the first open takes 10 to 30 seconds and later opens a couple of seconds.
+- Caches episode lists for 12 hours, so the first open takes 10 to 30 seconds and later opens a couple of seconds. A progress bar, time-left estimate and item-by-item activity log show what it is doing, so a long list never looks hung.
 
 ## Install (unpacked, Chrome or any Chromium browser)
 
@@ -57,6 +57,10 @@ Remove it from `chrome://extensions`. Nothing is left behind on Crunchyroll's si
 | **Refresh** | Re-reads your watchlist and playheads, reusing cached episode lists. Use after watching something. |
 | **Full reload** | Drops the cache and refetches everything. Use if a new episode has not shown up within 12 hours. |
 | **Normal Watchlist** | Closes the overlay and returns you to Crunchyroll's own page. Also stops the overlay reopening automatically until you click the button again. |
+
+While loading, the bar shows overall progress with a percentage and a time-left estimate, and an **activity log** lists every item as it completes: each show's season lookup, each instalment's episode fetch (with the languages requested, or "cached"), and each playhead batch. Failures are highlighted in the log. The log collapses when loading finishes; **Show activity log** brings it back, and the last run's log is kept until the next.
+
+The estimate counts work in request-sized units (one per show for seasons, one per instalment for episodes, one per 80 episode ids for playheads) and divides what is left by the measured rate so far, so it tightens as it goes and reacts to cache hits and rate-limit backoffs. It reads "estimating…" only until the first few units have completed.
 
 ### Settings
 

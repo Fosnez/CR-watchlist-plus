@@ -223,14 +223,17 @@
   const fetchSeasons = (seriesId) => api(`/content/v2/cms/series/${seriesId}/seasons?locale=en-US`).then((j) => j.data || []);
   const fetchEpisodes = (seasonId, audio) => api(`/content/v2/cms/seasons/${seasonId}/episodes?locale=en-US&preferred_audio_language=${audio}`).then((j) => j.data || []);
 
-  async function fetchPlayheads(ids) {
+  async function fetchPlayheads(ids, onBatch) {
     const t = await getToken();
     const out = {};
+    const n = Math.max(1, Math.ceil(ids.length / 80));
     for (let i = 0; i < ids.length; i += 80) {
       const chunk = ids.slice(i, i + 80);
       const j = await api(`/content/v2/${t.account_id}/playheads?content_ids=${chunk.join(",")}&locale=en-US`);
       for (const p of j.data || []) out[p.content_id] = { playhead: p.playhead, fully_watched: !!p.fully_watched };
+      onBatch && onBatch(i / 80 + 1, n, (j.data || []).length);
     }
+    if (!ids.length && onBatch) onBatch(1, 1, 0);
     return out;
   }
 
@@ -238,14 +241,12 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const ts = (iso) => { const n = iso ? Date.parse(iso) : NaN; return Number.isNaN(n) ? null : n; };
 
-  async function mapLimit(items, limit, fn, onProgress) {
-    let next = 0, done = 0;
+  async function mapLimit(items, limit, fn) {
+    let next = 0;
     async function worker() {
       while (next < items.length) {
         const i = next++;
         try { await fn(items[i], i); } catch (e) { console.error(`[${APP_NAME}]`, e); }
-        done++;
-        onProgress && onProgress(done, items.length);
       }
     }
     await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
@@ -295,7 +296,7 @@
     const cacheKey = seasonKey(langs, season.id);
     if (!force) {
       const cached = await store.get(cacheKey);
-      if (cached && Date.now() - cached.fetchedAt < EPISODES_TTL_MS) return cached.episodes;
+      if (cached && Date.now() - cached.fetchedAt < EPISODES_TTL_MS) { cached.episodes.fromCache = true; return cached.episodes; }
     }
     const lists = await Promise.all(langs.map((audio) => fetchEpisodes(season.id, audio)));
     const byKey = new Map();
@@ -333,10 +334,47 @@
   const seqOf = (e) => (Number.isFinite(e.seq) ? e.seq : Number.isFinite(e.n) ? e.n : Infinity);
   const episodeSeqOrder = (a, b) => (seqOf(a) - seqOf(b)) || String(a.key).localeCompare(String(b.key));
 
+  /**
+   * Progress model. Work is counted in request-sized units per phase; the
+   * wall-clock rate of finished units gives the ETA, so cached seasons (near
+   * instant) and rate-limit backoffs (slow) both feed straight into it.
+   */
+  function makeTracker(onProgress) {
+    const phases = []; // { name, total, done, start, end }
+    const t0 = Date.now();
+    let current = null;
+    const unitTime = (ph) => (ph && ph.done >= 3 && ph.start ? ((ph.end || Date.now()) - ph.start) / ph.done : null);
+    const emit = () => {
+      let doneUnits = 0, totalUnits = 0, etaMs = 0, fallback = 0.25 * 1000;
+      for (const ph of phases) { const ut = unitTime(ph); if (ut) fallback = ut; }
+      for (const ph of phases) {
+        doneUnits += ph.done; totalUnits += ph.total;
+        const remaining = Math.max(0, ph.total - ph.done);
+        etaMs += remaining * (unitTime(ph) ?? fallback);
+      }
+      const haveRate = phases.some((ph) => unitTime(ph) !== null);
+      onProgress(totalUnits ? Math.min(1, doneUnits / totalUnits) : 0, haveRate ? etaMs / 1000 : null, current ? current.name : "");
+    };
+    return {
+      phase(name, total) { current = { name, total: Math.max(1, Math.round(total)), done: 0, start: Date.now(), end: null }; phases.push(current); emit(); return current; },
+      retotal(total) { if (current) current.total = Math.max(current.done, Math.round(total)); emit(); },
+      tick(n = 1) { if (current) current.done = Math.min(current.total, current.done + n); emit(); },
+      finish() { if (current) { current.done = current.total; current.end = Date.now(); } emit(); },
+      elapsed: () => (Date.now() - t0) / 1000,
+    };
+  }
+
   /** Fetch everything needed to rank: watchlist, episodes per instalment, playheads. */
-  async function fetchData({ force = false, langs, onStatus, onProgress }) {
+  async function fetchData({ force = false, langs, onStatus, onProgress, onLog }) {
+    const log = onLog || (() => {});
+    const tracker = makeTracker(onProgress);
+    const langTag = langs.map(langLabel).join(", ");
+
+    tracker.phase("Reading watchlist", 1);
     onStatus("Reading your watchlist…");
     const wl = await fetchWatchlist();
+    tracker.finish();
+    log(`Watchlist: ${wl.length} show${wl.length === 1 ? "" : "s"}`);
     const shows = wl.map((it) => {
       const m = it.panel.episode_metadata || {};
       return {
@@ -350,32 +388,51 @@
       };
     });
 
-    onStatus(`Loading seasons and episodes for ${shows.length} shows…`);
+    // Phase 2: one request per show. Phases 3 and 4 are provisional totals until known.
+    onStatus(`Loading seasons for ${shows.length} shows…`);
+    const seasonsPhase = tracker.phase("Loading seasons", shows.length);
     const seasonJobs = [];
     await mapLimit(shows, CONCURRENCY, async (show) => {
       try {
         const seasons = canonicalSeasons(await fetchSeasons(show.seriesId));
         seasons.forEach((s, order) => seasonJobs.push({ show, season: s, order }));
+        log(`Seasons: ${show.title} · ${seasons.length} instalment${seasons.length === 1 ? "" : "s"}`);
       } catch (e) {
         show.error = `seasons: ${e.message}`;
+        log(`Seasons: ${show.title} · FAILED (${e.message})`);
       }
-    }, (d, n) => onProgress(d / n * 0.2));
+      tracker.tick();
+    });
+    tracker.finish();
 
+    // Phase 3: one unit per instalment (each unit is `langs.length` requests, or a cache hit).
+    onStatus(`Loading episodes for ${seasonJobs.length} instalments (${langTag})…`);
+    tracker.phase("Loading episodes", seasonJobs.length);
+    let cachedCount = 0;
     await mapLimit(seasonJobs, CONCURRENCY, async ({ show, season, order }) => {
       try {
         const eps = await loadSeason(season, langs, force);
         show.episodes.push(...eps.map((e) => ({ ...e, catalogueOrder: order })));
+        if (eps.fromCache) cachedCount++;
+        log(`Episodes: ${show.title} · ${season.title || season.id} · ${eps.length} ep${eps.length === 1 ? "" : "s"}${eps.fromCache ? " (cached)" : ` (${langTag})`}`);
       } catch (e) {
         show.failed.push(season.title || season.id);
+        log(`Episodes: ${show.title} · ${season.title || season.id} · FAILED (${e.message})`);
       }
-    }, (d, n) => onProgress(0.2 + d / n * 0.6));
+      tracker.tick();
+    });
+    tracker.finish();
     for (const show of shows) assignInstalmentOrder(show);
 
-    onStatus("Checking what you have already watched…");
+    // Phase 4: one unit per 80 ids.
     const ids = [];
     for (const show of shows) for (const ep of show.episodes) for (const v of Object.values(ep.versions)) ids.push(v.id);
-    const playheads = await fetchPlayheads(ids);
-    onProgress(1);
+    const batches = Math.max(1, Math.ceil(ids.length / 80));
+    onStatus(`Checking what you have already watched (${ids.length} episode versions)…`);
+    tracker.phase("Checking playheads", batches);
+    const playheads = await fetchPlayheads(ids, (i, n, got) => { log(`Playheads: batch ${i}/${n} · ${got} with progress`); tracker.tick(); });
+    tracker.finish();
+    log(`Done in ${tracker.elapsed().toFixed(1)}s · ${seasonJobs.length} instalments (${cachedCount} from cache) · ${ids.length} versions checked`);
     return { shows, playheads, languages: langs, builtAt: Date.now(), showCount: shows.length };
   }
 
@@ -544,7 +601,7 @@
   }
 
   // ------------------------------------------------------------ ui: state
-  let root, statusEl, progressEl, gridsEl, toggleBtn, modal, taglineEl;
+  let root, statusEl, progressEl, gridsEl, toggleBtn, modal, taglineEl, etaEl, logEl, logWrap, logToggle;
   const tagline = (p) => `newest unwatched episode first · audio: ${p.languages.map(langLabel).join(" › ")}${p.strictLanguages ? "" : " › any"}`;
   let data = null, view = null, prefs = { ...DEFAULT_PREFS };
   let prevHtmlOverflow = "";
@@ -575,19 +632,49 @@
     statusEl.textContent = msg;
     statusEl.classList.toggle("bwl-error", isError);
   }
-  const setProgress = (f) => { if (progressEl) progressEl.style.width = `${Math.round(f * 100)}%`; };
+  const fmtEta = (sec) => (sec === null ? "estimating…" : sec < 1.5 ? "almost done" : sec < 60 ? `about ${Math.max(2, Math.round(sec / 5) * 5)}s left` : `about ${Math.round(sec / 60)} min left`);
+  let progressPhase = "";
+  const setProgress = (f, etaSec, phase) => {
+    if (progressEl) progressEl.style.width = `${Math.round(f * 100)}%`;
+    if (!etaEl) return;
+    if (phase === undefined) { etaEl.textContent = ""; return; } // reset between runs
+    progressPhase = phase || progressPhase;
+    etaEl.textContent = `${Math.round(f * 100)}% · ${fmtEta(etaSec === undefined ? null : etaSec)}`;
+  };
+  const LOG_MAX = 500;
+  let logCount = 0;
+  const appendLog = (line) => {
+    if (!logEl) return;
+    const stamp = new Date().toLocaleTimeString(undefined, { hour12: false });
+    logEl.append(el("div", { class: "bwl-log-line" + (/FAILED/.test(line) ? " bwl-log-fail" : ""), text: `${stamp}  ${line}` }));
+    if (++logCount > LOG_MAX) { logEl.firstChild.remove(); logCount--; }
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  const setLogOpen = (open, { sticky = false } = {}) => {
+    logWrap.hidden = !open;
+    logToggle.textContent = open ? "Hide activity log" : "Show activity log";
+    if (sticky) logUserChoice = open;
+  };
+  let logUserChoice = null; // null = follow loading state; true/false = user pinned it
 
   let loading = false;
   async function load(force) {
     if (loading) return;
     loading = true;
-    setProgress(0);
+    logEl.replaceChildren(); logCount = 0;
+    logToggle.hidden = false;
+    if (logUserChoice !== false) setLogOpen(true);
+    setProgress(0, null, "Starting");
+    const started = Date.now();
     try {
-      data = await fetchData({ force, langs: prefs.languages, onStatus: setStatus, onProgress: setProgress });
+      data = await fetchData({ force, langs: prefs.languages, onStatus: setStatus, onProgress: setProgress, onLog: appendLog });
       render();
-      setStatus(`${data.showCount} shows · updated ${new Date(data.builtAt).toLocaleTimeString()}`);
+      const secs = ((Date.now() - started) / 1000).toFixed(1);
+      setStatus(`${data.showCount} shows · updated ${new Date(data.builtAt).toLocaleTimeString()} · loaded in ${secs}s`);
+      if (logUserChoice !== true) setLogOpen(false);
     } catch (e) {
       console.error(`[${APP_NAME}]`, e);
+      appendLog(`FAILED: ${e.message}`);
       setStatus(`Failed: ${e.message}`, true);
     } finally {
       loading = false;
@@ -695,7 +782,12 @@
         el("button", { class: "bwl-primary", text: "Normal Watchlist", title: "Back to Crunchyroll's own watchlist", onclick: () => hide(true) }),
       ]),
       el("div", { class: "bwl-progress" }, [progressEl]),
-      statusEl,
+      el("div", { class: "bwl-status-row" }, [
+        statusEl,
+        (etaEl = el("span", { class: "bwl-eta" })),
+        (logToggle = el("button", { class: "bwl-link", text: "Show activity log", hidden: true, onclick: () => setLogOpen(logWrap.hidden, { sticky: true }) })),
+      ]),
+      (logWrap = el("div", { class: "bwl-log-wrap", hidden: true }, [(logEl = el("div", { class: "bwl-log", role: "log", "aria-live": "polite" }))])),
       gridsEl,
     );
     document.documentElement.append(root);
