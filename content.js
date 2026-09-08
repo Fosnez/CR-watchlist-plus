@@ -50,8 +50,8 @@
   const COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
   const PREFS_COOKIE = "cr_watchlist_plus_prefs";
   const ACTIVE_COOKIE = "cr_watchlist_plus_active";
-  const DATA_KEY = "data:v4";
-  const seasonKey = (langs, seasonId) => `season:v4:${langs.join("+")}:${seasonId}`;
+  const DATA_KEY = "data:v5";
+  const seasonKey = (langs, seasonId) => `season:v5:${langs.join("+")}:${seasonId}`;
 
   // --------------------------------------------------------------- storage
   // Result cache: chrome.storage.local when running as an extension; a
@@ -316,10 +316,12 @@
           season: raw.season_number ?? null,
           inst: season.id,
           instTitle: season.title,
+          title: null, // episode title, preferring the first chosen language's wording
           air: raw.episode_air_date || null,
           thumb: pickThumb(raw.images),
           versions: {},
         };
+        if (raw.title && (!rec.title || locale === langs[0])) rec.title = raw.title;
         rec.air = rec.air || raw.episode_air_date || null;
         rec.thumb = rec.thumb || pickThumb(raw.images);
         rec.versions[locale] = { id: raw.id, date: releaseDate(raw), dur: raw.duration_ms || null, slug: raw.slug_title || "" };
@@ -574,7 +576,7 @@
     const lines = [];
     if (c) {
       lines.push(el("div", { class: "bwl-line" }, [
-        el("strong", { text: done ? "Latest: " : c.started ? "Continue: " : "Next new: " }),
+        el("strong", { text: done ? "Latest: " : c.started ? "Continue: " : "Next: " }),
         `${instalmentLabel(show, c.ep)} · ${langLabel(c.lang)} · `,
         el("span", { class: "bwl-date", text: relTime(c.at) }),
         el("span", { class: "bwl-muted", text: `  (${fmtDate(c.at)})` }),
@@ -596,7 +598,11 @@
         c ? el("span", { class: `bwl-badge ${flagClass}`, title: langName(c.lang), "aria-label": langName(c.lang), text: hasFlag ? "" : langLabel(c.lang) }) : null,
         !done && c && Date.now() - c.at < 7 * 86_400_000 ? el("span", { class: "bwl-badge bwl-new", text: "NEW" }) : null,
       ]),
-      el("div", { class: "bwl-body" }, [el("div", { class: "bwl-title", text: show.title }), ...lines]),
+      el("div", { class: "bwl-body" }, [
+        el("div", { class: "bwl-title", text: show.title }),
+        c && c.ep.title ? el("div", { class: "bwl-ep-title", text: c.ep.title }) : null,
+        ...lines,
+      ]),
     ]);
   }
 

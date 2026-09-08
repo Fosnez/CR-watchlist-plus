@@ -187,6 +187,15 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.bwl-ep-title {
+  color: #c9c9c9;
+  font-size: 13px;
+  line-height: 1.3;
+  margin-top: -2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .bwl-line { color: #a8a8a8; font-size: 13px; }
 .bwl-line strong { color: #e6e6e6; font-weight: 600; }
 .bwl-date { color: #f47521; font-weight: 600; }

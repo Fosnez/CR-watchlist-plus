@@ -83,7 +83,8 @@ Settings are stored in a cookie for `.crunchyroll.com`, not in the extension, so
 
 - **Flag badge** (top left of the thumbnail): the audio language the card's episode is in. Flags for English (Union Jack), Japanese, German, French, Italian and Russian; a two-letter text code for anything else. Hover for the full name.
 - **NEW** badge: that episode arrived in the last 7 days.
-- **Next new:** the newest episode you have not started. **Continue:** you have started it. **Latest:** shown on caught-up shows for the most recent episode.
+- **Episode title** in smaller text under the show name: the episode the card points at.
+- **Next:** the newest episode you have not started. **Continue:** you have started it. **Latest:** shown on caught-up shows for the most recent episode.
 - **S2 E9**, **Operation Desert Pasta**, **OVA Season 1 E3**: Crunchyroll's instalment title, not its internal season counter (which numbers movies and OVAs as seasons), then the episode number.
 - **No English audio for this episode yet** (or whichever language is first in your list): the newest unwatched episode is not yet available in your first-choice language, so it is dated by the next one that has it.
 - **N unwatched episodes · M earlier assumed watched**: the count still to watch, and how many the high-water rule filled in.
