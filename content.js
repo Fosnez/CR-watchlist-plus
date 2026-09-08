@@ -104,10 +104,15 @@
     [/credit|outro|ending/i, "skipCredits"],
     [/intro|opening/i, "skipIntro"],
   ];
-  function skipKind(el) {
-    const hay = [el.getAttribute("data-testid"), el.getAttribute("aria-label"), el.textContent].filter(Boolean).join(" ");
-    if (!/skip/i.test(hay)) return null;
-    for (const [re, kind] of SKIP_KIND_BY_WORD) if (re.test(hay)) return kind;
+  // Classify by what the user can read on the button. Crunchyroll reuses test
+  // ids and aria-labels across its skip buttons, so those are only a fallback
+  // when the button carries no visible text at all.
+  function skipKind(el, btn) {
+    const text = ((btn && btn.textContent) || el.textContent || "").trim();
+    const meta = [el.getAttribute("data-testid"), el.getAttribute("aria-label"), btn && btn.getAttribute("aria-label")].filter(Boolean).join(" ");
+    const hay = text || meta;
+    if (!/skip/i.test(hay) && !/skip/i.test(meta)) return null;
+    for (const [re, kind] of SKIP_KIND_BY_WORD) if (re.test(hay)) return { kind, label: text || meta };
     return null;
   }
   function isVisible(el) {
@@ -126,15 +131,16 @@
       if (!hits.length) return;
       const prefs = currentPrefs();
       for (const el of hits) {
-        const kind = skipKind(el);
-        if (!kind || !prefs[kind]) continue;
         const btn = el.closest('[role="button"], button') || el;
+        const hit = skipKind(el, btn);
+        if (!hit) continue;
         if (!isVisible(btn) || btn.disabled) continue;
+        if (!prefs[hit.kind]) { console.debug(`[${APP_NAME}] skip button seen, left alone (${hit.kind} off): "${hit.label}"`); continue; }
         const now = Date.now();
-        if (now - (lastClick[kind] || 0) < 1500) continue;
-        lastClick[kind] = now;
+        if (now - (lastClick[hit.kind] || 0) < 1500) continue;
+        lastClick[hit.kind] = now;
         btn.click();
-        console.info(`[${APP_NAME}] auto-skipped: ${kind}`);
+        console.info(`[${APP_NAME}] auto-skipped ${hit.kind}: "${hit.label}"`);
         return;
       }
     };
