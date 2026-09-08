@@ -83,7 +83,9 @@ Settings are stored in a cookie for `.crunchyroll.com`, not in the extension, so
 
 ## How auto-skip works
 
-Crunchyroll's player runs in an iframe on `static.crunchyroll.com`, so the content script runs in every frame. Inside the player it watches the DOM for elements whose `data-testid` or label contains "skip", classifies them as intro, recap or credits from the wording, checks the matching setting in the shared cookie, and clicks the enclosing button once it is actually visible. There is a short cooldown per kind so a button that lingers is not clicked twice. Nothing is seeked or skipped that Crunchyroll has not itself offered a button for.
+Crunchyroll's player runs in an iframe on `static.crunchyroll.com`, so the content script runs in every frame. Inside the player it watches the DOM for elements whose `data-testid` or label contains "skip", classifies each as intro, recap or credits from the **visible button text** (Crunchyroll reuses the same test id and aria-label across its skip buttons, so those are only a fallback), checks the matching setting in the shared cookie, and clicks the enclosing button once it is actually visible. There is a short cooldown per kind so a button that lingers is not clicked twice. Nothing is seeked or skipped that Crunchyroll has not itself offered a button for.
+
+Every decision is logged in the player frame's console as `[CR Watchlist Plus] auto-skipped …` or `… left alone (… off)`, so if a button is ever skipped or ignored unexpectedly, DevTools → Console → select the `static.crunchyroll.com` frame shows exactly what label it read.
 
 ## How the ranking works
 
@@ -104,7 +106,7 @@ To prefer Japanese over English, change `PREFERRED` at the top of `content.js`. 
 - **Episodes with no duration** in Crunchyroll's data only count as watched via Crunchyroll's own completed flag, never via the percentage rule.
 - **Messy instalment names.** Labels strip the series name and "(English Dub)" and recognise "Season 2", "Season2" and Roman numerals, but instalments whose title is only a year or a subtitle show that fragment, for example "3199 E19".
 - **Legacy dub seasons.** Very old catalogue entries where the dub is a separate season with no version links are treated as separate instalments, so watched-in-Japanese suppression does not apply to them.
-- **Auto-skip depends on Crunchyroll's markup.** Detection keys off the `data-testid` and label text of the skip buttons ("Skip Intro", "Skip Recap", "Skip Credits", plus "opening", "outro", "ending" variants). Other interface languages are not matched; a player UI change that drops those attributes will stop it silently. There is no "Skip Preview" or auto-play-next.
+- **Auto-skip depends on Crunchyroll's markup and English labels.** Detection finds buttons by a `data-testid` or aria-label containing "skip", then classifies by the visible text ("Skip Intro", "Skip Recap", "Skip Credits", plus "opening", "outro", "ending" variants). Other interface languages are not matched; a player UI change that drops those attributes will stop it silently. There is no "Skip Preview" or auto-play-next.
 - **Flags are drawn, not emoji.** Chrome on Windows cannot render flag emoji, so the two flags are inline SVGs and other languages fall back to a two-letter code.
 - **Unofficial API.** Crunchyroll can change endpoints or the web client id without notice. If the overlay shows "Token exchange failed", compare the `WEB_CLIENT_BASIC` constant in `content.js` with the Authorization header the site sends to `/auth/v1/token` (DevTools → Network). The id is Crunchyroll's public web-app client id with an empty secret; it is not a credential.
 - **Chrome only.** Manifest V3 with a service worker. Firefox would need a `browser_specific_settings` block and a background script.
