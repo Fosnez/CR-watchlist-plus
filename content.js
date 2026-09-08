@@ -878,6 +878,7 @@
     logToggle.hidden = false;
     if (logUserChoice !== false) setLogOpen(true);
     setProgress(0, null, "Starting");
+    if (force) { await store.remove(UPDATE_CHECK_KEY); checkForUpdate(); } // Full reload forgets every cache, this one included
     const started = Date.now();
     try {
       data = await fetchData({ force, langs: prefs.languages, fraction: prefs.watchedPct / 100, highWater: prefs.highWater, onStatus: setStatus, onProgress: setProgress, onLog: appendLog });

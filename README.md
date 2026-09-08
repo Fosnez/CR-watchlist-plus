@@ -59,7 +59,7 @@ Remove it from `chrome://extensions`. Nothing is left behind on Crunchyroll's si
 | **Search** (magnifier icon) | Opens Crunchyroll's search page. |
 | **Settings** | Opens the settings dialog (below). Changes apply on **Save** and re-rank instantly from cached data. |
 | **Refresh** | Re-reads your watchlist, airing seasons and unwatched episodes; everything known to be finished is skipped. This is also what happens on every open. |
-| **Full reload** | Forgets every cache, including watched positions, and refetches everything. Use if something looks wrong, or if you deliberately un-watched an episode. |
+| **Full reload** | Forgets every cache, including watched positions and the daily update check, and refetches everything. Use if something looks wrong, or if you deliberately un-watched an episode. |
 | **Normal Watchlist** | Closes the overlay and returns you to Crunchyroll's own page. Also stops the overlay reopening automatically until you click the button again. |
 
 While loading, the bar shows overall progress with a percentage and a time-left estimate, and an **activity log** lists every item as it completes: each show's seasons list, each instalment's episode list with its cache tier and whether it was fetched or reused, and each playhead batch. Failures are highlighted in the log. The log collapses when loading finishes; **Show activity log** brings it back, and the last run's log is kept until the next.
