@@ -1,0 +1,15 @@
+{
+  "name": "cr-watchlist-plus-tests",
+  "private": true,
+  "description": "Contract tests for CR Watchlist Plus against the live Crunchyroll site. Dev only; not part of the extension.",
+  "scripts": {
+    "login": "node login.js",
+    "test": "playwright test",
+    "test:public": "playwright test --grep @public",
+    "test:headed": "playwright test --headed",
+    "build:inpage": "node build-inpage.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0"
+  }
+}

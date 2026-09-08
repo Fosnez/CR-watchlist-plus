@@ -129,11 +129,17 @@ The episode cache is keyed by the language list, so changing languages refetches
 - **Unofficial API.** Crunchyroll can change endpoints or the web client id without notice. If the overlay shows "Token exchange failed", compare the `WEB_CLIENT_BASIC` constant in `content.js` with the Authorization header the site sends to `/auth/v1/token` (DevTools → Network). The id is Crunchyroll's public web-app client id with an empty secret; it is not a credential.
 - **Chrome only.** Manifest V3 with a service worker. Firefox would need a `browser_specific_settings` block and a background script.
 
+## Development: contract tests
+
+Crunchyroll changes its API and markup from time to time. Every assumption the extension makes about the site is collected in [`contract.js`](contract.js) (endpoints, response fields, DOM selectors), which the content script reads at runtime, and the Playwright suite in [`tests/`](tests/) checks each entry against the live site: API shapes, page selectors, and an end-to-end run of the unpacked extension. When something breaks, the failing assertion names the contract entry that moved. The suite is dev-only; nothing in `tests/` ships in the extension's runtime path. See [tests/README.md](tests/README.md) for setup (one-time login into a git-ignored profile) and what is covered.
+
 ## Files
 
 | File | Purpose |
 |---|---|
-| `manifest.json` | Extension manifest (MV3). Content script on all crunchyroll.com subdomains and frames, storage permissions, toolbar action, icons. |
+| `manifest.json` | Extension manifest (MV3). Content scripts (`contract.js` then `content.js`) on all crunchyroll.com subdomains and frames, storage permissions, toolbar action, icons. |
+| `contract.js` | Every Crunchyroll-facing assumption: endpoints, fields read, DOM selectors. Read by the content script and by the tests. |
+| `tests/` | Playwright contract tests against the live site (dev only, see above). |
 | `content.js` | Everything: token exchange, rate-capped API calls, caching, ranking, UI, and the player auto-skip (runs in all frames; only the auto-skip part runs inside iframes). |
 | `content.css` | Overlay styling, including the SVG flag badges. |
 | `background.js` | Toolbar click → focus an open watchlist tab and show the overlay, or open one. |

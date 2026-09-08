@@ -19,6 +19,11 @@
 (() => {
   "use strict";
 
+  // Everything Crunchyroll-specific (endpoints, fields, selectors) is in contract.js,
+  // loaded before this file. tests/ checks the same object against the live site.
+  const C = globalThis.CRWP_CONTRACT;
+  if (!C) { console.error("[CR Watchlist Plus] contract.js did not load; aborting"); return; }
+
   // ---------------------------------------------------------------- config
   const APP_NAME = "CR Watchlist Plus";
   const OPEN_HASH = "#cr-watchlist-plus";
@@ -41,10 +46,6 @@
   // episode as watched once past prefs.watchedPct OR within this many seconds
   // of the end (the tail rule only applies to episodes longer than the tail).
   const WATCHED_TAIL_SECONDS = 300;
-  // Crunchyroll's PUBLIC web-app client id ("noaihdevm_6iyg0a8l0q" with an
-  // empty secret), shipped in the site's own JS bundle. Not a secret and not
-  // tied to any user; it is what the site sends when it refreshes its token.
-  const WEB_CLIENT_BASIC = "bm9haWhkZXZtXzZpeWcwYThsMHE6";
   // Preferences live in a cookie on crunchyroll.com. Chrome caps cookie lifetime
   // at 400 days; we ask for that and rewrite the cookie on every open, so in
   // practice it never expires while the extension is in use.
@@ -140,11 +141,11 @@
     let scheduled = false;
     const scan = () => {
       scheduled = false;
-      const hits = document.querySelectorAll('[data-testid*="skip" i], [aria-label*="skip" i]');
+      const hits = document.querySelectorAll(C.dom.player.skipCandidates);
       if (!hits.length) return;
       const prefs = currentPrefs();
       for (const el of hits) {
-        const btn = el.closest('[role="button"], button') || el;
+        const btn = el.closest(C.dom.player.skipButton) || el;
         const hit = skipKind(el, btn);
         if (!hit) continue;
         if (!isVisible(btn) || btn.disabled) continue;
@@ -185,11 +186,11 @@
 
   async function getToken() {
     if (token && Date.now() < token.expiresAt - 20_000) return token;
-    const r = await fetch("/auth/v1/token", {
+    const r = await fetch(C.api.token.path, {
       method: "POST",
       credentials: "include",
-      headers: { Authorization: "Basic " + WEB_CLIENT_BASIC, "Content-Type": "application/x-www-form-urlencoded" },
-      body: `grant_type=etp_rt_cookie&device_type=Chrome&device_id=${await deviceId()}`,
+      headers: { Authorization: "Basic " + C.api.token.basic, "Content-Type": "application/x-www-form-urlencoded" },
+      body: `grant_type=${C.api.token.grant}&device_type=Chrome&device_id=${await deviceId()}`,
     });
     if (!r.ok) throw new Error(`Token exchange failed (${r.status}). Are you logged in to Crunchyroll?`);
     const j = await r.json();
@@ -222,7 +223,7 @@
     const items = [];
     let start = 0;
     for (;;) {
-      const j = await api(`/content/v2/discover/${t.account_id}/watchlist?n=100&start=${start}&order=desc&locale=en-US`);
+      const j = await api(`${C.api.watchlist.path(t.account_id)}?${C.api.watchlist.query.replace("start=0", `start=${start}`)}`);
       const page = j.data || [];
       items.push(...page);
       if (page.length < 100) break;
@@ -232,18 +233,19 @@
     return items;
   }
 
-  const fetchSeasons = (seriesId) => api(`/content/v2/cms/series/${seriesId}/seasons?locale=en-US`).then((j) => j.data || []);
-  const fetchEpisodes = (seasonId, audio) => api(`/content/v2/cms/seasons/${seasonId}/episodes?locale=en-US&preferred_audio_language=${audio}`).then((j) => j.data || []);
+  const fetchSeasons = (seriesId) => api(`${C.api.seasons.path(seriesId)}?${C.api.seasons.query}`).then((j) => j.data || []);
+  const fetchEpisodes = (seasonId, audio) => api(`${C.api.episodes.path(seasonId)}?${C.api.episodes.query(audio)}`).then((j) => j.data || []);
 
   async function fetchPlayheads(ids, onBatch) {
     const t = await getToken();
     const out = {};
     const chunks = [];
-    for (let i = 0; i < ids.length; i += 80) chunks.push(ids.slice(i, i + 80));
+    const B = C.api.playheads.batchSize;
+    for (let i = 0; i < ids.length; i += B) chunks.push(ids.slice(i, i + B));
     if (!chunks.length) { onBatch && onBatch(1, 1, 0); return out; }
     let done = 0;
     await mapLimit(chunks, CONCURRENCY, async (chunk) => {
-      const j = await api(`/content/v2/${t.account_id}/playheads?content_ids=${chunk.join(",")}&locale=en-US`);
+      const j = await api(`${C.api.playheads.path(t.account_id)}?${C.api.playheads.query(chunk)}`);
       for (const p of j.data || []) out[p.content_id] = { playhead: p.playhead, fully_watched: !!p.fully_watched };
       onBatch && onBatch(++done, chunks.length, (j.data || []).length);
     });
@@ -908,20 +910,20 @@
   function pageSeriesId() {
     const m = location.pathname.match(/^\/series\/([A-Z0-9]+)/i);
     if (m) return m[1];
-    const a = document.querySelector('a[href^="/series/"], a[href*="crunchyroll.com/series/"]');
-    const m2 = a && a.getAttribute("href").match(/\/series\/([A-Z0-9]+)/i);
+    const a = document.querySelector(C.dom.seriesLink);
+    const m2 = a && a.getAttribute("href").match(C.dom.seriesIdFromHref);
     return m2 ? m2[1] : null;
   }
 
   const fmtIsoDate = (at) => new Date(at).toISOString().slice(0, 10);
   // The option's textContent is title + episode count run together ("Season 125 Episodes"); read the title span.
-  const optionTitleEl = (opt) => opt.querySelector('[class*="option__text"]') || opt.firstElementChild || opt;
+  const optionTitleEl = (opt) => opt.querySelector(C.dom.seasonSelect.optionTitle) || opt.firstElementChild || opt;
   const optionTitle = (opt) => (optionTitleEl(opt).textContent || "").replace(/^\d{4}-\d{2}-\d{2}\s+·\s+/, "").trim();
 
   // Reorder the option nodes under each parent that holds them, and prefix each
   // title with the air date we sorted by, e.g. "2019-07-09 · OVA Season 1".
   function reorderSeasonDropdown(scope, order) {
-    const options = [...scope.querySelectorAll('[role="option"]')];
+    const options = [...scope.querySelectorAll(C.dom.seasonSelect.option)];
     if (options.length < 2) return false;
     const rankOf = new Map(order.titles.map((t, i) => [t, i]));
     let changed = false;
@@ -947,7 +949,7 @@
     let pending = false;
     const apply = async () => {
       pending = false;
-      const boxes = document.querySelectorAll('.erc-seasons-select [role="listbox"]');
+      const boxes = document.querySelectorAll(C.dom.seasonSelect.listbox);
       if (!boxes.length) return;
       const seriesId = pageSeriesId();
       if (!seriesId) return;
@@ -964,7 +966,7 @@
   // ------------------------------------------------------- page lifecycle
   // Offer the button on the My Lists pages. Auto-open there if the overlay was
   // active when the user left (e.g. to watch an episode) or if asked via hash.
-  const onListPage = () => /^\/(watchlist|crunchylists|history)\b/.test(location.pathname);
+  const onListPage = () => C.dom.listPagePath.test(location.pathname);
   function init() {
     if (onListPage()) {
       mountToggle();

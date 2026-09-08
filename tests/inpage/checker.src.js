@@ -1,0 +1,130 @@
+/*
+ * In-page contract checker (source). Built into contract-check.js by `npm run build:inpage`,
+ * which prepends contract.js so the result is self-contained.
+ *
+ * Run it from a logged-in Crunchyroll tab in your real browser: paste contract-check.js into
+ * DevTools → Console, or let Claude for Chrome inject it. It checks the same contract entries
+ * as the Playwright suite, paced (default one site call per 10 s), and prints a report.
+ * On a /series/ page it also checks the season dropdown; on a /watch/ page the episode
+ * panel and player frame; on a list page whether the installed extension mounted.
+ *
+ *   await crwpContractCheck()                       // default pacing
+ *   await crwpContractCheck({ minIntervalMs: 3000 }) // faster (be kind)
+ */
+globalThis.crwpContractCheck = async function crwpContractCheck(opts = {}) {
+  const C = globalThis.CRWP_CONTRACT;
+  const minInterval = opts.minIntervalMs ?? 10_000;
+  const results = [];
+  let last = 0;
+  const pace = async (label) => {
+    const wait = Math.max(0, last + minInterval - Date.now());
+    if (wait) { console.log(`%c[contract] pacing ${Math.round(wait / 1000)}s before ${label}`, "color:#8a8a8a"); await new Promise((r) => setTimeout(r, wait)); }
+    last = Date.now();
+  };
+  const ok = (name, pass, detail = "") => { results.push({ check: name, result: pass ? "PASS" : "FAIL", detail }); console.log(`%c${pass ? "PASS" : "FAIL"}%c ${name}${detail ? " · " + detail : ""}`, `color:${pass ? "#2ecc71" : "#ff6b6b"};font-weight:bold`, "color:inherit"); return pass; };
+  const skip = (name, why) => { results.push({ check: name, result: "SKIP", detail: why }); console.log(`%cSKIP%c ${name} · ${why}`, "color:#ffb347;font-weight:bold", "color:inherit"); };
+  const missing = (obj, fields) => fields.filter((f) => obj == null || obj[f] === undefined);
+  const fieldsOk = (name, obj, fields) => { const m = missing(obj, fields); return ok(name, m.length === 0, m.length ? `missing: ${m.join(", ")}` : `${fields.length} fields present`); };
+  const onSite = location.hostname.endsWith("crunchyroll.com");
+  if (!onSite) { ok("running on crunchyroll.com", false, location.hostname); return results; }
+
+  // ------------------------------------------------------------------ API
+  let token = null, accountId = null;
+  await pace("token exchange");
+  try {
+    const r = await fetch(C.api.token.path, { method: "POST", credentials: "include", headers: { Authorization: "Basic " + C.api.token.basic, "Content-Type": "application/x-www-form-urlencoded" }, body: `grant_type=${C.api.token.grant}&device_type=Chrome&device_id=00000000-0000-4000-8000-000000000000` });
+    const j = r.ok ? await r.json() : null;
+    if (ok("token exchange", r.status === 200, `HTTP ${r.status}${r.status === 403 ? " (bot protection or logged out)" : ""}`) && fieldsOk("token fields", j, C.api.token.fields)) { token = j.access_token; accountId = j.account_id; }
+  } catch (e) { ok("token exchange", false, e.message); }
+
+  const get = async (p) => { await pace(p.split("?")[0]); const r = await fetch(p, { headers: { Authorization: "Bearer " + token } }); return { status: r.status, json: r.ok ? await r.json() : null }; };
+  let seriesId = null, seasonId = null, ids = [];
+  if (token) {
+    const wl = await get(`${C.api.watchlist.path(accountId)}?${C.api.watchlist.query}`);
+    if (ok("watchlist request", wl.status === 200, `HTTP ${wl.status}`) && fieldsOk("watchlist fields", wl.json, C.api.watchlist.fields)) {
+      const item = wl.json.data[0];
+      if (!item) skip("watchlist item shape", "watchlist is empty");
+      else if (fieldsOk("watchlist item fields", item, C.api.watchlist.itemFields) && fieldsOk("panel fields", item.panel, C.api.watchlist.panelFields) && fieldsOk("episode_metadata fields", item.panel.episode_metadata, C.api.watchlist.episodeMetadataFields)) {
+        ok("panel thumbnail sizes array", Array.isArray(item.panel.images?.thumbnail?.[0]));
+        seriesId = item.panel.episode_metadata.series_id;
+      }
+    }
+  } else skip("watchlist / seasons / episodes / playheads", "no token");
+  if (location.pathname.startsWith("/series/")) seriesId = location.pathname.split("/")[2] || seriesId;
+
+  if (token && seriesId) {
+    const se = await get(`${C.api.seasons.path(seriesId)}?${C.api.seasons.query}`);
+    if (ok("seasons request", se.status === 200, `HTTP ${se.status}`) && fieldsOk("seasons fields", se.json, C.api.seasons.fields)) {
+      const bad = se.json.data.filter((s) => missing(s, C.api.seasons.itemFields).length);
+      ok("season item fields", bad.length === 0, bad.length ? `bad: ${bad.map((s) => s.id).join(", ")}` : `${se.json.data.length} seasons`);
+      const withV = se.json.data.find((s) => Array.isArray(s.versions) && s.versions.length);
+      if (ok("a season lists audio versions", !!withV)) {
+        ok("version fields", withV.versions.every((v) => missing(v, C.api.seasons.versionFields).length === 0));
+        ok("a version is flagged original", withV.versions.some((v) => v.original === true));
+        seasonId = (withV.versions.find((v) => v.original) || withV.versions[0]).guid;
+      }
+    }
+  }
+  if (token && seasonId) {
+    const ja = await get(`${C.api.episodes.path(seasonId)}?${C.api.episodes.query("ja-JP")}`);
+    if (ok("episodes request (ja-JP)", ja.status === 200, `HTTP ${ja.status}`) && ja.json.data.length) {
+      const e = ja.json.data[0];
+      fieldsOk("episode fields", e, C.api.episodes.itemFields);
+      ok("identifier is version-independent", typeof e.identifier === "string" && !/(ENUS|JAJP)$/.test(e.identifier), e.identifier);
+      ok("episode_air_date parses", !Number.isNaN(Date.parse(e.episode_air_date)), e.episode_air_date);
+      ok("premium_available_date parses", !Number.isNaN(Date.parse(e.premium_available_date)), e.premium_available_date);
+      ok("duration_ms is a number", typeof e.duration_ms === "number", String(e.duration_ms));
+      const en = await get(`${C.api.episodes.path(seasonId)}?${C.api.episodes.query("en-US")}`);
+      const enE = en.json && en.json.data.find((x) => x.identifier === e.identifier);
+      ok("same identifier in en-US listing", !!enE);
+      if (enE && e.versions.some((v) => v.audio_locale === "en-US")) ok("preferred_audio_language selects the en-US version", enE.audio_locale === "en-US", enE.audio_locale);
+      ids = [e.id, enE && enE.id].filter(Boolean);
+    }
+  }
+  if (token && ids.length) {
+    const ph = await get(`${C.api.playheads.path(accountId)}?${C.api.playheads.query(ids)}`);
+    if (ok("playheads request", ph.status === 200, `HTTP ${ph.status}`) && fieldsOk("playheads fields", ph.json, C.api.playheads.fields)) ok("playhead item fields", ph.json.data.every((p) => missing(p, C.api.playheads.itemFields).length === 0), `${ph.json.data.length} records`);
+    const many = Array.from({ length: C.api.playheads.batchSize }, (_, i) => `G${String(i).padStart(8, "0")}`);
+    const big = await get(`${C.api.playheads.path(accountId)}?${C.api.playheads.query(many)}`);
+    ok(`playheads accepts a batch of ${C.api.playheads.batchSize}`, big.status === 200, `HTTP ${big.status}`);
+  }
+
+  // ------------------------------------------------------------------ DOM
+  const S = C.dom.seasonSelect;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const checkSeasonSelect = async (where) => {
+    const root = document.querySelector(S.root);
+    if (!ok(`${where}: season selector root`, !!root, S.root)) return;
+    const trig = document.querySelector(S.trigger);
+    if (!ok(`${where}: selector trigger`, !!trig, S.trigger)) return;
+    trig.click(); await sleep(700);
+    const lb = document.querySelector(S.listbox);
+    if (!ok(`${where}: listbox after click`, !!lb, S.listbox)) return;
+    const opts = [...lb.querySelectorAll(S.option)];
+    ok(`${where}: options`, opts.length > 1, `${opts.length} options`);
+    const titles = opts.map((o) => o.querySelector(S.optionTitle)).filter(Boolean);
+    ok(`${where}: option title spans`, titles.length === opts.length, `${titles.length}/${opts.length}`);
+    ok(`${where}: options share one parent`, new Set(opts.map((o) => o.parentElement)).size === 1);
+    const texts = titles.map((t) => t.textContent.trim());
+    const prefixed = texts.filter((t) => /^\d{4}-\d{2}-\d{2} · /.test(t));
+    if (prefixed.length) { const d = prefixed.map((t) => t.slice(0, 10)); ok(`${where}: extension reordered by air date`, [...d].sort().join() === d.join(), texts.join(" | ")); }
+    else skip(`${where}: extension reorder`, "no date prefixes seen (extension not installed here, or its lookup still running)");
+    trig.click();
+  };
+  if (location.pathname.startsWith("/series/")) await checkSeasonSelect("series page");
+  else if (location.pathname.startsWith("/watch/")) {
+    ok("watch page: series link", !!document.querySelector(C.dom.seriesLink), C.dom.seriesLink);
+    const btn = [...document.querySelectorAll(C.dom.seeMoreEpisodes.selector)].find((b) => C.dom.seeMoreEpisodes.text.test(b.textContent));
+    if (ok("watch page: See More Episodes button", !!btn)) { btn.click(); await sleep(1500); await checkSeasonSelect("episode panel"); }
+    const frame = [...document.querySelectorAll("iframe")].find((f) => f.src.includes(C.dom.player.frameHost));
+    ok(`watch page: player iframe on ${C.dom.player.frameHost}`, !!frame, frame ? "" : "no player frame (tab hidden, not premium, or automation blocked?)");
+  } else if (C.dom.listPagePath.test(location.pathname)) {
+    ok("list page: extension launcher mounted (#bwl-toggle)", !!document.getElementById("bwl-toggle") || !!document.getElementById("bwl-root"), "requires the extension to be installed");
+  } else skip("DOM checks", "open a /series/, /watch/ or /watchlist page to run them");
+
+  const failed = results.filter((r) => r.result === "FAIL").length;
+  console.table(results);
+  console.log(`%c[contract] ${results.length - failed - results.filter((r) => r.result === "SKIP").length} passed, ${failed} failed, ${results.filter((r) => r.result === "SKIP").length} skipped`, failed ? "color:#ff6b6b;font-weight:bold" : "color:#2ecc71;font-weight:bold");
+  return results;
+};
+console.log("%c[contract] loaded. Run: await crwpContractCheck()", "color:#f47521;font-weight:bold");

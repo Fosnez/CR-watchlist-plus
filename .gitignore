@@ -6,3 +6,9 @@ node_modules/
 # local test bundles (content.js + css concatenated for console injection)
 *.tmp.js
 inject*.js
+
+# test suite (dev only)
+tests/node_modules/
+tests/.profile/
+tests/test-results/
+tests/playwright-report/
