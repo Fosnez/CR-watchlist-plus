@@ -21,9 +21,9 @@
   const EPISODES_TTL_MS = 12 * 60 * 60 * 1000; // cache season episode lists 12h
   const CONCURRENCY = 6;
   // Crunchyroll only sets `fully_watched` if you sit through the ending theme.
-  // Skipping the credits leaves the playhead at ~83-89%, so treat an episode as
+  // Skipping the credits leaves the playhead at roughly 80-90%, so treat an episode as
   // watched once you are past this fraction OR within this many seconds of the end.
-  const WATCHED_FRACTION = 0.8;
+  const WATCHED_FRACTION = 0.75;
   const WATCHED_TAIL_SECONDS = 300;
   // Public client id the Crunchyroll web app uses for the cookie -> token grant.
   const WEB_CLIENT_BASIC = "bm9haWhkZXZtXzZpeWcwYThsMHE6";
