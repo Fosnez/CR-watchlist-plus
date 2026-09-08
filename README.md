@@ -29,7 +29,7 @@ Crunchyroll's "Recent Activity" sort bumps a show whenever *anything* about it c
 - Ranks shows by the newest unwatched episode's arrival date and renders its own grid over the watchlist page. Each card links to that exact episode in the language shown.
 - Remembers that you had the overlay open. Click an episode, watch it, come back to the watchlist by any route, and the overlay is there again with your progress refreshed.
 - In the player, watches for Crunchyroll's "Skip Intro", "Skip Recap" and "Skip Credits" buttons and clicks the ones you have enabled as soon as they become visible. No seeking of its own, so it can only skip what Crunchyroll has marked.
-- Caches episode lists for 12 hours, so the first open takes 10 to 30 seconds and later opens a couple of seconds. A progress bar, time-left estimate and item-by-item activity log show what it is doing, so a long list never looks hung.
+- Caches episode lists for 12 hours. A cold load of a 40-show list is a few seconds (about 270 requests, never more than 8 in flight); later opens are quicker still. A progress bar, time-left estimate and item-by-item activity log show what it is doing, so a long list never looks hung.
 
 ## Install (unpacked, Chrome or any Chromium browser)
 
@@ -117,7 +117,7 @@ The episode cache is keyed by the language list, so changing languages refetches
 - **Legacy dub seasons.** Very old catalogue entries where the dub is a separate season with no version links are treated as separate instalments, so watched-in-Japanese suppression does not apply to them.
 - **Auto-skip depends on Crunchyroll's markup and English labels.** Detection finds buttons by a `data-testid` or aria-label containing "skip", then classifies by the visible text ("Skip Intro", "Skip Recap", "Skip Credits", plus "opening", "outro", "ending" variants). Other interface languages are not matched; a player UI change that drops those attributes will stop it silently. There is no "Skip Preview" or auto-play-next.
 - **Flags are drawn, not emoji.** Chrome on Windows cannot render flag emoji, so the six flags are CSS (two inline SVGs, four gradients) and other languages fall back to a two-letter code.
-- **Many languages means many requests.** Each chosen language costs one request per season on a cold cache. Two languages on a 40-show list is about 350 requests; six languages roughly triples the fetch phase. Crunchyroll rate-limits gently and the extension backs off and retries, but a very long list with many languages will take a minute or two on first load.
+- **Many languages means many requests.** Each chosen language costs one request per instalment on a cold cache. Two languages on a 40-show list is about 270 requests; six languages roughly triples the episode phase. All phases share a cap of 8 requests in flight, so the load is throttled rather than bursty, and a 429 is backed off and retried. Expect a long list with many languages to take tens of seconds on first load, then seconds from cache.
 - **Unofficial API.** Crunchyroll can change endpoints or the web client id without notice. If the overlay shows "Token exchange failed", compare the `WEB_CLIENT_BASIC` constant in `content.js` with the Authorization header the site sends to `/auth/v1/token` (DevTools → Network). The id is Crunchyroll's public web-app client id with an empty secret; it is not a credential.
 - **Chrome only.** Manifest V3 with a service worker. Firefox would need a `browser_specific_settings` block and a background script.
 
@@ -126,7 +126,7 @@ The episode cache is keyed by the language list, so changing languages refetches
 | File | Purpose |
 |---|---|
 | `manifest.json` | Extension manifest (MV3). Content script on all crunchyroll.com subdomains and frames, storage permissions, toolbar action, icons. |
-| `content.js` | Everything: token exchange, API calls, caching, ranking, UI, and the player auto-skip (runs in all frames; only the auto-skip part runs inside iframes). |
+| `content.js` | Everything: token exchange, rate-capped API calls, caching, ranking, UI, and the player auto-skip (runs in all frames; only the auto-skip part runs inside iframes). |
 | `content.css` | Overlay styling, including the SVG flag badges. |
 | `background.js` | Toolbar click → focus an open watchlist tab and show the overlay, or open one. |
 | `icons/` | Toolbar and extension icons. |

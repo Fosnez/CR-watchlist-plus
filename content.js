@@ -33,7 +33,8 @@
   const LOCALE_NAME = Object.fromEntries(LOCALES);
   const DEFAULT_LANGUAGES = ["en-US", "ja-JP"];
   const EPISODES_TTL_MS = 12 * 60 * 60 * 1000; // cache season episode lists 12h
-  const CONCURRENCY = 6;
+  const CONCURRENCY = 6;      // items worked on at once within a phase
+  const MAX_IN_FLIGHT = 8;    // hard cap on simultaneous API requests, shared by every phase
   const DEFAULT_PREFS = { watchedPct: 75, highWater: true, hideDone: true, languages: DEFAULT_LANGUAGES, strictLanguages: true, skipIntro: true, skipCredits: true, skipRecap: false };
   // Crunchyroll only sets `fully_watched` if you sit through the ending theme.
   // Skipping the credits leaves the playhead at roughly 80-90%, so treat an
@@ -196,9 +197,20 @@
     return token;
   }
 
+  // Global request gate: at most MAX_IN_FLIGHT calls to Crunchyroll at any moment,
+  // whatever the phase and however many languages are selected.
+  const gate = (() => {
+    let active = 0; const queue = [];
+    const release = () => { active--; const next = queue.shift(); if (next) { active++; next(); } };
+    return async (fn) => {
+      if (active >= MAX_IN_FLIGHT) await new Promise((r) => queue.push(r)); else active++;
+      try { return await fn(); } finally { release(); }
+    };
+  })();
+
   async function api(path, retries = { auth: 0, rate: 0 }) {
     const t = await getToken();
-    const r = await fetch(path, { headers: { Authorization: "Bearer " + t.access_token } });
+    const r = await gate(() => fetch(path, { headers: { Authorization: "Bearer " + t.access_token } }));
     if (r.status === 401 && retries.auth < 1) { token = null; return api(path, { ...retries, auth: retries.auth + 1 }); }
     if (r.status === 429 && retries.rate < 3) { await sleep(1000 * (retries.rate + 1)); return api(path, { ...retries, rate: retries.rate + 1 }); }
     if (!r.ok) throw new Error(`${r.status} ${path.split("?")[0]}`);
@@ -226,14 +238,15 @@
   async function fetchPlayheads(ids, onBatch) {
     const t = await getToken();
     const out = {};
-    const n = Math.max(1, Math.ceil(ids.length / 80));
-    for (let i = 0; i < ids.length; i += 80) {
-      const chunk = ids.slice(i, i + 80);
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += 80) chunks.push(ids.slice(i, i + 80));
+    if (!chunks.length) { onBatch && onBatch(1, 1, 0); return out; }
+    let done = 0;
+    await mapLimit(chunks, CONCURRENCY, async (chunk) => {
       const j = await api(`/content/v2/${t.account_id}/playheads?content_ids=${chunk.join(",")}&locale=en-US`);
       for (const p of j.data || []) out[p.content_id] = { playhead: p.playhead, fully_watched: !!p.fully_watched };
-      onBatch && onBatch(i / 80 + 1, n, (j.data || []).length);
-    }
-    if (!ids.length && onBatch) onBatch(1, 1, 0);
+      onBatch && onBatch(++done, chunks.length, (j.data || []).length);
+    });
     return out;
   }
 
