@@ -47,6 +47,18 @@
   line-height: 1.1;
 }
 .bwl-tagline { color: #8a8a8a; font-size: 12px; }
+.bwl-home { color: inherit; text-decoration: none; }
+.bwl-home:hover { color: #f47521; }
+.bwl-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  color: #dadada;
+  border-radius: 4px;
+}
+.bwl-iconbtn:hover { color: #fff; background: #23252b; }
 .bwl-bar .bwl-spacer { flex: 1; }
 .bwl-bar button,
 .bwl-modal button {

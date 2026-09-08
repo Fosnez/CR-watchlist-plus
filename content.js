@@ -784,6 +784,17 @@
     document.addEventListener("keydown", onKey);
   }
 
+  // Crunchyroll's own nav magnifier (same geometry as its icon set).
+  function searchIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("width", "24"); svg.setAttribute("height", "24"); svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("fill", "currentColor");
+    path.setAttribute("d", "M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z");
+    svg.append(path);
+    return svg;
+  }
+
   // ------------------------------------------------------------ ui: shell
   function buildUi() {
     if (root) return;
@@ -793,8 +804,12 @@
     gridsEl = el("div");
     root.append(
       el("div", { class: "bwl-bar" }, [
-        el("div", { class: "bwl-heading" }, [el("h1", { text: APP_NAME }), (taglineEl = el("div", { class: "bwl-tagline", text: tagline(prefs) }))]),
+        el("div", { class: "bwl-heading" }, [
+          el("h1", {}, [el("a", { href: "https://www.crunchyroll.com/", class: "bwl-home", title: "Crunchyroll home", text: APP_NAME })]),
+          (taglineEl = el("div", { class: "bwl-tagline", text: tagline(prefs) })),
+        ]),
         el("span", { class: "bwl-spacer" }),
+        el("a", { href: "/search", class: "bwl-iconbtn", title: "Search", "aria-label": "Search" }, [searchIcon()]),
         el("button", { text: "Settings", onclick: openSettings }),
         el("button", { text: "Refresh", title: "Re-check playheads and new episodes (uses cached episode lists)", onclick: () => load(false) }),
         el("button", { text: "Full reload", title: "Ignore cache and refetch everything", onclick: () => load(true) }),
@@ -852,6 +867,99 @@
     toggleBtn = el("button", { id: "bwl-toggle", text: APP_NAME, onclick: () => show() });
     document.documentElement.append(toggleBtn);
   }
+
+  // ---------------------------------------------- native season dropdown
+  // Crunchyroll's series page and the player's "see more episodes" panel share
+  // one season selector (.erc-seasons-select). Its options follow Crunchyroll's
+  // editorial order (OVAs and movies appended at the end). We reorder the
+  // option nodes to our air-date order. Moving the existing nodes keeps React's
+  // event handling intact; an observer re-applies the order after re-renders.
+  const INST_START_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  const instalmentOrderCache = new Map(); // seriesId -> Promise<{ titles: string[] }>
+
+  async function instalmentOrderFor(seriesId) {
+    if (instalmentOrderCache.has(seriesId)) return instalmentOrderCache.get(seriesId);
+    const job = (async () => {
+      const seasons = canonicalSeasons(await fetchSeasons(seriesId));
+      const starts = await Promise.all(seasons.map(async (season, i) => {
+        const key = `inst-start:${season.id}`;
+        let rec = await store.get(key);
+        if (!rec || Date.now() - rec.at > INST_START_TTL_MS) {
+          let start = null;
+          try {
+            const eps = await fetchEpisodes(season.id, currentPrefs().languages[0]);
+            for (const e of eps) { const d = ts(e.episode_air_date) ?? ts(releaseDate(e)); if (d !== null && (start === null || d < start)) start = d; }
+          } catch (e) { console.warn(`[${APP_NAME}] instalment start lookup failed for ${season.title}:`, e.message); }
+          rec = { start, at: Date.now() };
+          await store.set(key, rec);
+        }
+        return { i, season, start: rec.start };
+      }));
+      starts.sort((a, b) => ((a.start ?? Infinity) - (b.start ?? Infinity)) || (a.i - b.i));
+      const startsByTitle = {};
+      for (const x of starts) startsByTitle[(x.season.title || "").trim()] = x.start;
+      return { titles: starts.map((x) => (x.season.title || "").trim()), starts: startsByTitle };
+    })();
+    instalmentOrderCache.set(seriesId, job);
+    job.catch(() => instalmentOrderCache.delete(seriesId));
+    return job;
+  }
+
+  function pageSeriesId() {
+    const m = location.pathname.match(/^\/series\/([A-Z0-9]+)/i);
+    if (m) return m[1];
+    const a = document.querySelector('a[href^="/series/"], a[href*="crunchyroll.com/series/"]');
+    const m2 = a && a.getAttribute("href").match(/\/series\/([A-Z0-9]+)/i);
+    return m2 ? m2[1] : null;
+  }
+
+  const fmtIsoDate = (at) => new Date(at).toISOString().slice(0, 10);
+  // The option's textContent is title + episode count run together ("Season 125 Episodes"); read the title span.
+  const optionTitleEl = (opt) => opt.querySelector('[class*="option__text"]') || opt.firstElementChild || opt;
+  const optionTitle = (opt) => (optionTitleEl(opt).textContent || "").replace(/^\d{4}-\d{2}-\d{2}\s+·\s+/, "").trim();
+
+  // Reorder the option nodes under each parent that holds them, and prefix each
+  // title with the air date we sorted by, e.g. "2019-07-09 · OVA Season 1".
+  function reorderSeasonDropdown(scope, order) {
+    const options = [...scope.querySelectorAll('[role="option"]')];
+    if (options.length < 2) return false;
+    const rankOf = new Map(order.titles.map((t, i) => [t, i]));
+    let changed = false;
+    const parents = new Set(options.map((o) => o.parentElement));
+    for (const parent of parents) {
+      const opts = [...parent.children].filter((c) => c.getAttribute("role") === "option");
+      const keyed = opts.map((o, i) => ({ o, i, rank: rankOf.get(optionTitle(o)) }));
+      if (keyed.filter((k) => k.rank !== undefined).length < 2) continue; // titles did not match: leave Crunchyroll's order alone
+      keyed.sort((a, b) => ((a.rank ?? Infinity) - (b.rank ?? Infinity)) || (a.i - b.i));
+      if (!keyed.every((k, idx) => k.o === opts[idx])) { for (const k of keyed) parent.append(k.o); changed = true; }
+      for (const k of keyed) {
+        const at = order.starts[optionTitle(k.o)];
+        if (at === undefined || at === null) continue;
+        const elT = optionTitleEl(k.o);
+        const want = `${fmtIsoDate(at)} · ${optionTitle(k.o)}`;
+        if (elT.textContent.trim() !== want) { elT.textContent = want; changed = true; }
+      }
+    }
+    return changed;
+  }
+
+  function watchSeasonDropdowns() {
+    let pending = false;
+    const apply = async () => {
+      pending = false;
+      const boxes = document.querySelectorAll('.erc-seasons-select [role="listbox"]');
+      if (!boxes.length) return;
+      const seriesId = pageSeriesId();
+      if (!seriesId) return;
+      let order;
+      try { order = await instalmentOrderFor(seriesId); } catch (e) { console.warn(`[${APP_NAME}] season order lookup failed:`, e.message); return; }
+      for (const box of boxes) if (reorderSeasonDropdown(box, order)) console.info(`[${APP_NAME}] season list reordered by air date`);
+    };
+    const schedule = () => { if (!pending) { pending = true; setTimeout(apply, 120); } };
+    new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
+    schedule();
+  }
+  watchSeasonDropdowns();
 
   // ------------------------------------------------------- page lifecycle
   // Offer the button on the My Lists pages. Auto-open there if the overlay was

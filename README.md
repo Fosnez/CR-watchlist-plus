@@ -29,6 +29,7 @@ Crunchyroll's "Recent Activity" sort bumps a show whenever *anything* about it c
 - Ranks shows by the newest unwatched episode's arrival date and renders its own grid over the watchlist page. Each card links to that exact episode in the language shown.
 - Remembers that you had the overlay open. Click an episode, watch it, come back to the watchlist by any route, and the overlay is there again with your progress refreshed.
 - In the player, watches for Crunchyroll's "Skip Intro", "Skip Recap" and "Skip Credits" buttons and clicks the ones you have enabled as soon as they become visible. No seeking of its own, so it can only skip what Crunchyroll has marked.
+- On a show's page, and in the player's "See More Episodes" panel, re-sorts Crunchyroll's own season dropdown into air-date order and prefixes each instalment with the date it was sorted by ("2019-07-09 · OVA Season 1"), so OVAs and movies sit where they belong in the run instead of at the bottom.
 - Caches episode lists for 12 hours. A cold load of a 40-show list is a few seconds (about 270 requests, never more than 8 in flight); later opens are quicker still. A progress bar, time-left estimate and item-by-item activity log show what it is doing, so a long list never looks hung.
 
 ## Install (unpacked, Chrome or any Chromium browser)
@@ -53,6 +54,8 @@ Remove it from `chrome://extensions`. Nothing is left behind on Crunchyroll's si
 
 | Control | What it does |
 |---|---|
+| **CR Watchlist Plus** (title) | Links to the Crunchyroll home page. |
+| **Search** (magnifier icon) | Opens Crunchyroll's search page. |
 | **Settings** | Opens the settings dialog (below). Changes apply on **Save** and re-rank instantly from cached data. |
 | **Refresh** | Re-reads your watchlist and playheads, reusing cached episode lists. Use after watching something. |
 | **Full reload** | Drops the cache and refetches everything. Use if a new episode has not shown up within 12 hours. |
@@ -90,6 +93,10 @@ Settings are stored in a cookie for `.crunchyroll.com`, not in the extension, so
 - **N unwatched episodes · M earlier assumed watched**: the count still to watch, and how many the high-water rule filled in.
 - **Could not load** (orange): part or all of that show failed to fetch. Such shows are listed in their own section, never as caught up, so a network hiccup cannot hide a new episode. Try **Refresh**.
 
+## The native season dropdown
+
+Crunchyroll's series page and the player's "See More Episodes" panel share one season selector whose options follow Crunchyroll's editorial order, with OVA collections and movies appended after the numbered seasons. On those pages the extension looks up each instalment's first-episode air date (one request per instalment in your first language, cached for 7 days), moves the existing option nodes into air-date order, and prefixes each title with that date. The option nodes themselves are not replaced, so Crunchyroll's click handling keeps working; if the page re-renders the list, the order is re-applied. If the option titles do not match Crunchyroll's season titles for some reason, the list is left alone.
+
 ## How auto-skip works
 
 Crunchyroll's player runs in an iframe on `static.crunchyroll.com`, so the content script runs in every frame. Inside the player it watches the DOM for elements whose `data-testid` or label contains "skip", classifies each as intro, recap or credits from the **visible button text** (Crunchyroll reuses the same test id and aria-label across its skip buttons, so those are only a fallback), checks the matching setting in the shared cookie, and clicks the enclosing button once it is actually visible. There is a short cooldown per kind so a button that lingers is not clicked twice. Nothing is seeked or skipped that Crunchyroll has not itself offered a button for.
@@ -110,6 +117,7 @@ The episode cache is keyed by the language list, so changing languages refetches
 
 ## Known issues and edge cases
 
+- **Season dropdown dates are first-episode dates.** The prefix on Crunchyroll's season list is the air date of the instalment's earliest episode, so a multi-year OVA collection shows its first OVA's date. The dropdown is reordered only where Crunchyroll renders the `erc-seasons-select` component; a redesign of that component will turn the feature off silently.
 - **OVA collections spanning years.** An OVA "season" is placed by the air date of its *first* episode, but Crunchyroll often groups OVAs released over several years into one collection. A late OVA can therefore sit before a TV season that aired after it, and the high-water rule will infer it watched once you finish that season. Slime's "OVA Season 1" (2019 to 2020) is the live example. Per-episode ordering would fix this but breaks recap and special episodes that air out of sequence; the trade-off is left as is. Turn the high-water rule off if it bites.
 - **The high-water rule is an inference.** It cannot tell "watched elsewhere or skipped on purpose" from "abandoned halfway". A movie you stopped at 51% before finishing the next season will be treated as watched. Cards show the inferred count so you can see when it has acted.
 - **Episodes with no duration** in Crunchyroll's data only count as watched via Crunchyroll's own completed flag, never via the percentage rule.
