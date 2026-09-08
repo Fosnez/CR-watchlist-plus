@@ -199,30 +199,32 @@
   startAutoSkip();
 
   // ---------------------------------------------------- observed playheads
-  // Inside the player frame: sample the <video> and note how far you are into
-  // the episode the top frame says you are watching (it writes `watching` from
-  // the /watch/ URL). The overlay uses these notes to draw the right state the
-  // instant you come back, before Crunchyroll's own record has been re-read.
-  // They never replace that record: a note is only a hint, so a bad sample can
-  // last at most until the next refresh. A sample is committed only when two
-  // consecutive readings for the same id advance, so the moment autoplay swaps
-  // episodes cannot pin the old position onto the new id.
+  // Wherever the <video> lives (Crunchyroll has rendered the player both in the
+  // page and in an iframe on static.crunchyroll.com): sample it and note how far
+  // you are into the episode named by the /watch/ URL. In the top frame that is
+  // this page's URL; in an iframe it is the `watching` note the top frame wrote.
+  // The overlay uses these notes to draw the right state the instant you come
+  // back, before Crunchyroll's own record has been re-read. They never replace
+  // that record: a note is only a hint, so a bad sample can last at most until
+  // the next refresh. A sample is committed only when two consecutive readings
+  // for the same id advance, so the moment autoplay swaps episodes cannot pin
+  // the old position onto the new id.
   function startPlayheadObserver() {
     let last = null; // { id, t }
     setInterval(async () => {
       const video = document.querySelector("video");
       if (!video || !(video.duration > 0) || !(video.currentTime > 0)) return;
-      const w = await store.get(WATCHING_KEY);
-      if (!w || Date.now() - w.at > TTL.watching) return;
+      let id = null;
+      if (window.top === window) { const m = location.pathname.match(C.dom.watchIdFromPath); id = m && m[1]; }
+      else { const w = await store.get(WATCHING_KEY); id = w && Date.now() - w.at <= TTL.watching ? w.id : null; }
+      if (!id) return;
       const t = Math.floor(video.currentTime);
-      if (last && last.id === w.id && t > last.t) await store.set(OBS_PREFIX + w.id, { playhead: t, duration: Math.round(video.duration), at: Date.now() });
-      last = { id: w.id, t };
+      if (last && last.id === id && t > last.t) await store.set(OBS_PREFIX + id, { playhead: t, duration: Math.round(video.duration), at: Date.now() });
+      last = { id, t };
     }, 5000);
   }
-  if (window.top !== window) {
-    if (location.hostname === C.dom.player.frameHost) startPlayheadObserver();
-    return; // inside the player (or any other) iframe: auto-skip and observation only
-  }
+  startPlayheadObserver();
+  if (window.top !== window) return; // inside an iframe: auto-skip and observation only
 
   // Per-install device id for the token grant (not a user identifier; it just
   // stops every install from presenting the same device to Crunchyroll).
