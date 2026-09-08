@@ -36,7 +36,7 @@
         path: (seriesId) => `/content/v2/cms/series/${seriesId}/seasons`,
         query: "locale=en-US",
         fields: ["data"],
-        itemFields: ["id", "title", "season_number", "audio_locale", "versions"],
+        itemFields: ["id", "title", "season_number", "audio_locale", "versions", "number_of_episodes"],
         versionFields: ["guid", "audio_locale", "original"],
       },
       episodes: {
@@ -61,6 +61,8 @@
       // A link that reveals the series id on a watch page.
       seriesLink: 'a[href^="/series/"], a[href*="crunchyroll.com/series/"]',
       seriesIdFromHref: /\/series\/([A-Z0-9]+)/i,
+      // The episode (version) id in a watch page URL; the same id the playheads endpoint uses.
+      watchIdFromPath: /^\/watch\/([A-Z0-9]+)/i,
       // Shared season selector on series pages and in the player's episode panel.
       seasonSelect: {
         root: ".erc-seasons-select",

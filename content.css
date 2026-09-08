@@ -261,3 +261,17 @@
 .bwl-lang-rank { min-width: 16px; color: #f47521; font-weight: 700; }
 .bwl-lang-move button { padding: 0 5px; font-size: 10px; line-height: 18px; margin-left: 2px; }
 .bwl-lang-move button[disabled] { opacity: 0.3; cursor: default; }
+
+/* Version beside the title: small grey link to the repository; orange when a newer version exists. */
+.bwl-version, .bwl-update {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #8a8a8a;
+  text-decoration: none;
+  vertical-align: 2px;
+}
+.bwl-version:hover { color: #fff; }
+.bwl-update { color: #f47521; }
+.bwl-update:hover { text-decoration: underline; }
+.bwl-update[hidden] { display: none; }

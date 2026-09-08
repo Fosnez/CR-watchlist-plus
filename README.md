@@ -10,7 +10,7 @@ It also auto-skips intros and credits in the player (and recaps, if you turn tha
 
 ![The overlay on a real watchlist](docs/screenshot.png)
 
-Everything runs inside your browser, in your existing Crunchyroll login. No server, no account details stored, no analytics. The only network traffic is to crunchyroll.com, using the same internal endpoints the site's own watchlist page calls.
+Everything runs inside your browser, in your existing Crunchyroll login. No server, no account details stored, no analytics. The only network traffic is to crunchyroll.com, using the same internal endpoints the site's own watchlist page calls, plus one optional request a day to GitHub to see whether a newer version exists (can be turned off in Settings).
 
 > Not on the Chrome Web Store. Install it unpacked from this repository (below). Not affiliated with or endorsed by Crunchyroll; it uses undocumented endpoints and may stop working when they change.
 
@@ -30,7 +30,7 @@ Crunchyroll's "Recent Activity" sort bumps a show whenever *anything* about it c
 - Remembers that you had the overlay open. Click an episode, watch it, come back to the watchlist by any route, and the overlay is there again with your progress refreshed.
 - In the player, watches for Crunchyroll's "Skip Intro", "Skip Recap" and "Skip Credits" buttons and clicks the ones you have enabled as soon as they become visible. No seeking of its own, so it can only skip what Crunchyroll has marked.
 - On a show's page, and in the player's "See More Episodes" panel, re-sorts Crunchyroll's own season dropdown into air-date order and prefixes each instalment with the date it was sorted by ("2019-07-09 · OVA Season 1"), so OVAs and movies sit where they belong in the run instead of at the bottom.
-- Caches episode lists for 12 hours. A cold load of a 40-show list is a few seconds (about 270 requests, never more than 8 in flight); later opens are quicker still. A progress bar, time-left estimate and item-by-item activity log show what it is doing, so a long list never looks hung.
+- Caches aggressively and only asks Crunchyroll about things that can still change: airing seasons, and episodes you have not finished. A cold load of a 42-show list is about 270 requests and 4 seconds (never more than 8 requests in flight); every later open is under 10 requests and about 2 seconds. See [Caching](#caching). A progress bar, time-left estimate and item-by-item activity log show what it is doing, so a long list never looks hung.
 
 ## Install (unpacked, Chrome or any Chromium browser)
 
@@ -44,7 +44,7 @@ The toolbar icon (orange play button; pin it via the puzzle-piece menu) also ope
 
 ### Updating
 
-Pull or re-download the folder, then on `chrome://extensions` click the reload arrow on the extension card. Cached data is versioned; if a release changes the cache format the first open refetches and everything else carries over. Your settings live in a cookie and are unaffected.
+An orange "vX.Y.Z available" beside the version in the overlay header tells you there is something to update to (checked once a day; see Settings). Pull or re-download the folder, then on `chrome://extensions` click the reload arrow on the extension card. Cached data is versioned; if a release changes the cache format the first open refetches and everything else carries over. Your settings live in a cookie and are unaffected.
 
 ### Uninstall
 
@@ -55,15 +55,16 @@ Remove it from `chrome://extensions`. Nothing is left behind on Crunchyroll's si
 | Control | What it does |
 |---|---|
 | **CR Watchlist Plus** (title) | Links to the Crunchyroll home page. |
+| **vX.Y.Z** (grey, beside the title) | The installed version; links to this repository. An orange "vX.Y.Z available" appears next to it when the repository has a newer version (see Settings). Update by re-downloading and clicking the reload arrow on `chrome://extensions`. |
 | **Search** (magnifier icon) | Opens Crunchyroll's search page. |
 | **Settings** | Opens the settings dialog (below). Changes apply on **Save** and re-rank instantly from cached data. |
-| **Refresh** | Re-reads your watchlist and playheads, reusing cached episode lists. Use after watching something. |
-| **Full reload** | Drops the cache and refetches everything. Use if a new episode has not shown up within 12 hours. |
+| **Refresh** | Re-reads your watchlist, airing seasons and unwatched episodes; everything known to be finished is skipped. This is also what happens on every open. |
+| **Full reload** | Forgets every cache, including watched positions, and refetches everything. Use if something looks wrong, or if you deliberately un-watched an episode. |
 | **Normal Watchlist** | Closes the overlay and returns you to Crunchyroll's own page. Also stops the overlay reopening automatically until you click the button again. |
 
-While loading, the bar shows overall progress with a percentage and a time-left estimate, and an **activity log** lists every item as it completes: each show's season lookup, each instalment's episode fetch (with the languages requested, or "cached"), and each playhead batch. Failures are highlighted in the log. The log collapses when loading finishes; **Show activity log** brings it back, and the last run's log is kept until the next.
+While loading, the bar shows overall progress with a percentage and a time-left estimate, and an **activity log** lists every item as it completes: each show's seasons list, each instalment's episode list with its cache tier and whether it was fetched or reused, and each playhead batch. Failures are highlighted in the log. The log collapses when loading finishes; **Show activity log** brings it back, and the last run's log is kept until the next.
 
-The estimate counts work in request-sized units (one per show for seasons, one per instalment for episodes, one per 80 episode ids for playheads) and divides what is left by the measured rate so far, so it tightens as it goes and reacts to cache hits and rate-limit backoffs. It reads "estimating…" only until the first few units have completed.
+The estimate counts work in request-sized units (one per show for its seasons list, one per instalment for episodes, one per 80 episode ids for playheads) and divides what is left by the measured rate so far, so it tightens as it goes and reacts to cache hits and rate-limit backoffs. It reads "estimating…" only until the first few units have completed.
 
 ### Settings
 
@@ -79,6 +80,7 @@ The estimate counts work in request-sized units (one per show for seasons, one p
 | **Skip intro** | on | Player: click "Skip Intro" as soon as it appears. |
 | **Skip credits** | on | Player: click "Skip Credits" as soon as it appears. |
 | **Skip recap** | off | Player: click "Skip Recap" as soon as it appears. Off by default because recaps are sometimes worth watching. |
+| **Check for new versions** | on | Once a day, read `manifest.json` from this repository's main branch and, if its version is newer than the installed one, show an orange "vX.Y.Z available" notice beside the version in the header. The only request the extension makes to anything other than crunchyroll.com. |
 
 Settings are stored in a cookie for `.crunchyroll.com`, not in the extension, so they survive reinstalling the extension and are visible to the video player, which lives in an iframe on `static.crunchyroll.com`. Chrome caps cookie lifetime at 400 days; the cookie is rewritten every time the overlay opens, so in practice it never expires while you use it. Defaults are written on first open. Player settings take effect on the next skip button to appear; no reload needed.
 
@@ -95,7 +97,7 @@ Settings are stored in a cookie for `.crunchyroll.com`, not in the extension, so
 
 ## The native season dropdown
 
-Crunchyroll's series page and the player's "See More Episodes" panel share one season selector whose options follow Crunchyroll's editorial order, with OVA collections and movies appended after the numbered seasons. On those pages the extension looks up each instalment's first-episode air date (one request per instalment in your first language, cached for 7 days), moves the existing option nodes into air-date order, and prefixes each title with that date. The option nodes themselves are not replaced, so Crunchyroll's click handling keeps working; if the page re-renders the list, the order is re-applied. If the option titles do not match Crunchyroll's season titles for some reason, the list is left alone.
+Crunchyroll's series page and the player's "See More Episodes" panel share one season selector whose options follow Crunchyroll's editorial order, with OVA collections and movies appended after the numbered seasons. On those pages the extension looks up each instalment's first-episode air date (from the overlay's own caches for shows on your watchlist; otherwise one request per instalment in your first language, cached for 7 days), moves the existing option nodes into air-date order, and prefixes each title with that date. The option nodes themselves are not replaced, so Crunchyroll's click handling keeps working; if the page re-renders the list, the order is re-applied. If the option titles do not match Crunchyroll's season titles for some reason, the list is left alone.
 
 ## How auto-skip works
 
@@ -115,6 +117,29 @@ For each show:
 
 The episode cache is keyed by the language list, so changing languages refetches once and then caches as normal.
 
+## Caching
+
+Almost nothing on a watchlist changes between two opens, so the extension only asks about what can. Everything below is decided at load time from the caches and your current settings, and never costs a request.
+
+**Seasons lists.** A show's list of instalments is cached for an hour while any of its instalments is airing and for a day otherwise; a new season is listed on Crunchyroll long before its first episode. The seasons response also carries an episode count per audio version, which is kept as a **fingerprint** for each instalment: if the count changes (an episode added, a dub catching up), that instalment's episode list is refetched whatever its age.
+
+**Episode lists** are kept per instalment and reused according to a tier:
+
+| Tier | Meaning | Reused for |
+|---|---|---|
+| active | newest episode released within the last 30 days | 1 hour |
+| latest | the show's newest instalment, nothing new for 30 days (a split cour may resume) | 7 days |
+| dormant | an older instalment with episodes you have not watched (a dub could still arrive) | 30 days |
+| watched | an older instalment you have finished | a year |
+
+The fingerprint is the real mechanism for spotting change; the tiers are the fallback for anything it cannot see.
+
+**Watched positions.** Playheads are cached too. An episode already past your watched threshold in any language, or preceding one that is while the high-water rule is on, is never asked about again in any language: a position only moves forward. On a 42-show list this cuts the playhead check from 35 requests to a handful, and it re-evaluates against the current threshold, so lowering it skips more and raising it re-checks what no longer qualifies. If you deliberately un-watch something, use **Full reload**, which forgets every cache and also sweeps entries for shows and languages no longer in use.
+
+**While you watch.** The content script in the player frame samples the video position every few seconds and notes it against the episode in the page URL. When you come back to the watchlist those notes, plus one request for the show you were just watching, make the first render right before the full refresh finishes. Notes are hints only: they never replace Crunchyroll's own record and never skip a check, so a bad sample lasts at most one refresh.
+
+Measured on the development watchlist (42 shows, 94 instalments, 2744 episode versions, English and Japanese): cold load 266 requests in 4.2 s; a later open was 78 requests in 3.5 s before this scheme and is now 8 requests in 2.0 s (the watchlist page plus 7 playhead batches).
+
 ## Known issues and edge cases
 
 - **Season dropdown dates are first-episode dates.** The prefix on Crunchyroll's season list is the air date of the instalment's earliest episode, so a multi-year OVA collection shows its first OVA's date. The dropdown is reordered only where Crunchyroll renders the `erc-seasons-select` component; a redesign of that component will turn the feature off silently.
@@ -125,7 +150,9 @@ The episode cache is keyed by the language list, so changing languages refetches
 - **Legacy dub seasons.** Very old catalogue entries where the dub is a separate season with no version links are treated as separate instalments, so watched-in-Japanese suppression does not apply to them.
 - **Auto-skip depends on Crunchyroll's markup and English labels.** Detection finds buttons by a `data-testid` or aria-label containing "skip", then classifies by the visible text ("Skip Intro", "Skip Recap", "Skip Credits", plus "opening", "outro", "ending" variants). Other interface languages are not matched; a player UI change that drops those attributes will stop it silently. There is no "Skip Preview" or auto-play-next.
 - **Flags are drawn, not emoji.** Chrome on Windows cannot render flag emoji, so the six flags are CSS (two inline SVGs, four gradients) and other languages fall back to a two-letter code.
-- **Many languages means many requests.** Each chosen language costs one request per instalment on a cold cache. Two languages on a 40-show list is about 270 requests; six languages roughly triples the episode phase. All phases share a cap of 8 requests in flight, so the load is throttled rather than bursty, and a 429 is backed off and retried. Expect a long list with many languages to take tens of seconds on first load, then seconds from cache.
+- **Many languages means many requests, once.** Each chosen language costs one request per instalment on a cold cache. Two languages on a 40-show list is about 270 requests; six languages roughly triples the episode phase. All phases share a cap of 8 requests in flight, so the load is throttled rather than bursty, and a 429 is backed off and retried. After the first load only airing instalments are refetched, so the language count barely matters.
+- **Un-watching is not noticed.** Once an episode is cached as watched it is not re-checked, so rewinding an episode to the start on Crunchyroll will not bring it back as unwatched until you use Full reload.
+- **Positions noted in the player are unverified.** The player-frame sampling relies on a `<video>` element being visible to the content script inside Crunchyroll's player iframe and on the top frame's `/watch/` URL naming the episode being played. Both held in inspection but the flow has not yet been exercised end to end; if it does nothing, the only effect is that the first render after watching is corrected a couple of seconds later by the normal refresh.
 - **Unofficial API.** Crunchyroll can change endpoints or the web client id without notice. If the overlay shows "Token exchange failed", compare the `WEB_CLIENT_BASIC` constant in `content.js` with the Authorization header the site sends to `/auth/v1/token` (DevTools → Network). The id is Crunchyroll's public web-app client id with an empty secret; it is not a credential.
 - **Chrome only.** Manifest V3 with a service worker. Firefox would need a `browser_specific_settings` block and a background script.
 
@@ -148,7 +175,7 @@ Crunchyroll changes its API and markup from time to time. Every assumption the e
 
 ## Privacy
 
-The extension reads your watchlist, episode metadata and playheads from crunchyroll.com and stores derived data in the extension's local storage on your machine. It sets two cookies for `.crunchyroll.com`: `cr_watchlist_plus_prefs` (your settings) and `cr_watchlist_plus_active` (whether to reopen the overlay when you return to the watchlist). It generates a random device id per install for Crunchyroll's token exchange, stored locally; this is not linked to you and exists only so every install does not present the same device. It sends nothing anywhere else and never modifies your Crunchyroll account.
+The extension reads your watchlist, episode metadata and playheads from crunchyroll.com and stores derived data, including your playheads and the id of the episode you last opened, in the extension's local storage on your machine. It sets two cookies for `.crunchyroll.com`: `cr_watchlist_plus_prefs` (your settings) and `cr_watchlist_plus_active` (whether to reopen the overlay when you return to the watchlist). It generates a random device id per install for Crunchyroll's token exchange, stored locally; this is not linked to you and exists only so every install does not present the same device. If "Check for new versions" is on (the default), once a day it fetches `manifest.json` from this repository on `raw.githubusercontent.com` to compare version numbers; that request carries no account data, only what any web request carries (your IP address and browser headers), and the setting turns it off entirely. It sends nothing anywhere else and never modifies your Crunchyroll account.
 
 ## How it was built
 

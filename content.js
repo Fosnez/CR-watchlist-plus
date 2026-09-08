@@ -27,6 +27,12 @@
   // ---------------------------------------------------------------- config
   const APP_NAME = "CR Watchlist Plus";
   const OPEN_HASH = "#cr-watchlist-plus";
+  // Update check: the manifest on the repository's main branch is exactly what
+  // "Download ZIP" would give you. Fetched at most once a day, only if enabled
+  // in Settings, and the only request this extension makes off crunchyroll.com.
+  const REPO_URL = "https://github.com/Fosnez/CR-watchlist-plus";
+  const MANIFEST_URL = "https://raw.githubusercontent.com/Fosnez/CR-watchlist-plus/main/manifest.json";
+  const UPDATE_CHECK_KEY = "update_check"; // { at, version }
   // Audio locales Crunchyroll offers. Order here is only the order shown in Settings.
   const LOCALES = [
     ["en-US", "English"], ["ja-JP", "Japanese"], ["de-DE", "German"], ["fr-FR", "French"],
@@ -37,10 +43,24 @@
   ];
   const LOCALE_NAME = Object.fromEntries(LOCALES);
   const DEFAULT_LANGUAGES = ["en-US", "ja-JP"];
-  const EPISODES_TTL_MS = 12 * 60 * 60 * 1000; // cache season episode lists 12h
+  const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
+  // Cache lifetimes. An instalment is "active" while its newest episode is less
+  // than ACTIVE_WINDOW old; everything else is dormant. These are fallbacks: the
+  // per-season episode counts in the seasons response act as a fingerprint, and
+  // a changed fingerprint refetches an instalment's episodes whatever its age.
+  const ACTIVE_WINDOW_MS = 30 * DAY;
+  const TTL = {
+    active: HOUR,             // airing (or a dub still catching up)
+    latestDormant: 7 * DAY,   // a show's latest instalment, nothing new for 30 days: may resume (split cour)
+    dormant: 30 * DAY,        // older instalment with unwatched episodes: a dub could still arrive
+    dormantWatched: 365 * DAY,// older instalment, every episode watched: nothing left that can matter
+    seasonsActive: HOUR,      // the show's seasons list while any instalment is active
+    seasonsDormant: DAY,      // seasons list of a dormant show; a new season is listed long before it airs
+    watching: 6 * HOUR,       // how long a "currently watching" note from a /watch/ page stays relevant
+  };
   const CONCURRENCY = 6;      // items worked on at once within a phase
   const MAX_IN_FLIGHT = 8;    // hard cap on simultaneous API requests, shared by every phase
-  const DEFAULT_PREFS = { watchedPct: 75, highWater: true, hideDone: true, languages: DEFAULT_LANGUAGES, strictLanguages: true, skipIntro: true, skipCredits: true, skipRecap: false };
+  const DEFAULT_PREFS = { watchedPct: 75, highWater: true, hideDone: true, languages: DEFAULT_LANGUAGES, strictLanguages: true, skipIntro: true, skipCredits: true, skipRecap: false, checkUpdates: true };
   // Crunchyroll only sets `fully_watched` if you sit through the ending theme.
   // Skipping the credits leaves the playhead at roughly 80-90%, so treat an
   // episode as watched once past prefs.watchedPct OR within this many seconds
@@ -54,20 +74,29 @@
   const ACTIVE_COOKIE = "cr_watchlist_plus_active";
   const DATA_KEY = "data:v5";
   const seasonKey = (langs, seasonId) => `season:v5:${langs.join("+")}:${seasonId}`;
+  const seasonsListKey = (seriesId) => `seasons:v1:${seriesId}`;
+  const PLAYHEADS_KEY = "playheads:v1"; // { [versionId]: { playhead, fully_watched, observed? } }
+  const WATCHING_KEY = "watching";       // { id, at } written by the top frame on /watch/ pages
+  const OBS_PREFIX = "obs:";             // obs:<versionId> -> { playhead, at } sampled in the player frame
 
   // --------------------------------------------------------------- storage
   // Result cache: chrome.storage.local when running as an extension; a
   // localStorage fallback so the same file can be pasted into the page console
   // for testing. Preferences are NOT kept here; they live in the cookie only.
   const isExtension = typeof chrome !== "undefined" && !!(chrome.storage && chrome.storage.local);
+  const VERSION = (isExtension && chrome.runtime && chrome.runtime.getManifest && chrome.runtime.getManifest().version) || "dev";
   const store = isExtension
     ? {
         get: (k) => chrome.storage.local.get(k).then((r) => r[k]),
         set: (k, v) => chrome.storage.local.set({ [k]: v }),
+        remove: (ks) => chrome.storage.local.remove(ks),
+        keys: () => chrome.storage.local.get(null).then((r) => Object.keys(r)),
       }
     : {
         get: async (k) => { try { const v = localStorage.getItem("bwl:" + k); return v ? JSON.parse(v) : undefined; } catch { return undefined; } },
         set: async (k, v) => { try { localStorage.setItem("bwl:" + k, JSON.stringify(v)); } catch {} },
+        remove: async (ks) => { for (const k of [].concat(ks)) localStorage.removeItem("bwl:" + k); },
+        keys: async () => Object.keys(localStorage).filter((k) => k.startsWith("bwl:")).map((k) => k.slice(4)),
       };
 
   const readCookie = (name) => {
@@ -87,7 +116,7 @@
       if (Number.isFinite(p.watchedPct)) out.watchedPct = Math.min(100, Math.max(50, Math.round(p.watchedPct / 5) * 5));
       if (typeof p.highWater === "boolean") out.highWater = p.highWater;
       if (typeof p.hideDone === "boolean") out.hideDone = p.hideDone;
-      for (const k of ["skipIntro", "skipCredits", "skipRecap", "strictLanguages"]) if (typeof p[k] === "boolean") out[k] = p[k];
+      for (const k of ["skipIntro", "skipCredits", "skipRecap", "strictLanguages", "checkUpdates"]) if (typeof p[k] === "boolean") out[k] = p[k];
       if (Array.isArray(p.languages)) {
         const langs = [...new Set(p.languages.filter((l) => LOCALE_NAME[l]))];
         if (langs.length) out.languages = langs;
@@ -168,7 +197,32 @@
     if (!observe()) document.addEventListener("DOMContentLoaded", observe, { once: true });
   }
   startAutoSkip();
-  if (window.top !== window) return; // inside the player (or any other) iframe: auto-skip only
+
+  // ---------------------------------------------------- observed playheads
+  // Inside the player frame: sample the <video> and note how far you are into
+  // the episode the top frame says you are watching (it writes `watching` from
+  // the /watch/ URL). The overlay uses these notes to draw the right state the
+  // instant you come back, before Crunchyroll's own record has been re-read.
+  // They never replace that record: a note is only a hint, so a bad sample can
+  // last at most until the next refresh. A sample is committed only when two
+  // consecutive readings for the same id advance, so the moment autoplay swaps
+  // episodes cannot pin the old position onto the new id.
+  function startPlayheadObserver() {
+    let last = null; // { id, t }
+    setInterval(async () => {
+      const video = document.querySelector("video");
+      if (!video || !(video.duration > 0) || !(video.currentTime > 0)) return;
+      const w = await store.get(WATCHING_KEY);
+      if (!w || Date.now() - w.at > TTL.watching) return;
+      const t = Math.floor(video.currentTime);
+      if (last && last.id === w.id && t > last.t) await store.set(OBS_PREFIX + w.id, { playhead: t, duration: Math.round(video.duration), at: Date.now() });
+      last = { id: w.id, t };
+    }, 5000);
+  }
+  if (window.top !== window) {
+    if (location.hostname === C.dom.player.frameHost) startPlayheadObserver();
+    return; // inside the player (or any other) iframe: auto-skip and observation only
+  }
 
   // Per-install device id for the token grant (not a user identifier; it just
   // stops every install from presenting the same device to Crunchyroll).
@@ -300,19 +354,94 @@
     }
     return [...groups.values()].map((g) => {
       const row = g.rows.find((r) => r.audio_locale === g.audio) || g.rows.find((r) => r.id === g.id) || g.rows[0];
-      return { id: g.id, title: row.title || "", number: row.season_number };
+      // Fingerprint: episode count per audio version. Changes when an episode
+      // is added to the original run or a dub catches up, which is exactly when
+      // a cached episode list must be refetched.
+      const fp = g.rows.map((r) => `${r.audio_locale || "und"}:${r.number_of_episodes ?? "?"}`).sort().join(",");
+      return { id: g.id, title: row.title || "", number: row.season_number, fp };
     });
   }
 
   // Merge key that does not depend on which audio version a row came from.
   const episodeKey = (raw, seasonId) => raw.identifier || `${seasonId}|${raw.season_number ?? ""}|${raw.sequence_number ?? raw.episode_number ?? raw.id}`;
 
-  async function loadSeason(season, langs, force) {
-    const cacheKey = seasonKey(langs, season.id);
-    if (!force) {
-      const cached = await store.get(cacheKey);
-      if (cached && Date.now() - cached.fetchedAt < EPISODES_TTL_MS) { cached.episodes.fromCache = true; return cached.episodes; }
+  const newestRelease = (episodes) => {
+    let best = null;
+    for (const e of episodes) for (const v of Object.values(e.versions)) { const d = ts(v.date); if (d !== null && (best === null || d > best)) best = d; }
+    return best;
+  };
+  const allWatched = (episodes, playheads, fraction) => episodes.length > 0 && episodes.every((e) => Object.values(e.versions).some((v) => isWatched(playheads[v.id], v.dur, fraction)));
+
+  /**
+   * Decide, per instalment, whether its cached episode list can be reused.
+   * `entries` are the cached records (or undefined) in the same order as
+   * `seasons`. Tiers, from the caches alone, no requests:
+   *   missing  no cache                              -> fetch
+   *   changed  fingerprint differs from the seasons  -> fetch
+   *   active   newest episode under 30 days old      -> TTL.active
+   *   latest   the show's newest instalment, dormant -> TTL.latestDormant
+   *   watched  older instalment, all watched         -> TTL.dormantWatched
+   *   dormant  older instalment, unwatched episodes  -> TTL.dormant
+   */
+  function classifyInstalments(seasons, entries, playheads, fraction) {
+    const now = Date.now();
+    const newest = entries.map((en) => (en ? newestRelease(en.episodes) : null));
+    const latest = newest.reduce((best, d, i) => (d !== null && (best < 0 || d > newest[best]) ? i : best), -1);
+    return seasons.map((season, i) => {
+      const en = entries[i];
+      if (!en) return { tier: "missing", fresh: false };
+      if (en.fp !== season.fp) return { tier: "changed", fresh: false };
+      let tier, ttl;
+      if (newest[i] !== null && now - newest[i] < ACTIVE_WINDOW_MS) { tier = "active"; ttl = TTL.active; }
+      else if (i === latest || newest[i] === null) { tier = "latest"; ttl = TTL.latestDormant; }
+      else if (allWatched(en.episodes, playheads, fraction)) { tier = "watched"; ttl = TTL.dormantWatched; }
+      else { tier = "dormant"; ttl = TTL.dormant; }
+      return { tier, fresh: now - en.fetchedAt < ttl };
+    });
+  }
+
+  /** Seasons list, then every instalment's episodes, for one show. Returns cache statistics. */
+  async function loadShow(show, { force, langs, fraction, playheads, log, onInstalments, tick }) {
+    const listKey = seasonsListKey(show.seriesId);
+    const cachedList = force ? null : await store.get(listKey);
+    let seasons = cachedList && Array.isArray(cachedList.seasons) ? cachedList.seasons : null;
+    const readEntries = () => Promise.all(seasons.map((s) => store.get(seasonKey(langs, s.id))));
+    let entries = seasons ? await readEntries() : [];
+    let tiers = seasons ? classifyInstalments(seasons, entries, playheads, fraction) : [];
+    // The seasons list is refetched hourly while anything is airing (its episode
+    // counts are the fingerprint), daily otherwise.
+    const settled = seasons && tiers.every((t) => t.tier !== "active" && t.tier !== "missing");
+    let listCached = true;
+    if (!seasons || Date.now() - cachedList.fetchedAt > (settled ? TTL.seasonsDormant : TTL.seasonsActive)) {
+      seasons = canonicalSeasons(await fetchSeasons(show.seriesId));
+      await store.set(listKey, { fetchedAt: Date.now(), seasons });
+      listCached = false;
+      entries = await readEntries();
+      tiers = classifyInstalments(seasons, entries, playheads, fraction);
     }
+    log(`Seasons: ${show.title} · ${seasons.length} instalment${seasons.length === 1 ? "" : "s"}${listCached ? " (cached)" : ""}`);
+    onInstalments(seasons.length);
+    tick();
+    let episodesCached = 0;
+    await Promise.all(seasons.map(async (season, order) => {
+      const { tier, fresh } = tiers[order];
+      const label = season.title || season.id;
+      try {
+        let eps;
+        if (!force && fresh) { eps = entries[order].episodes; episodesCached++; }
+        else eps = await fetchSeasonEpisodes(season, langs);
+        show.episodes.push(...eps.map((e) => ({ ...e, catalogueOrder: order })));
+        log(`Episodes: ${show.title} · ${label} · ${eps.length} ep${eps.length === 1 ? "" : "s"} · ${tier}${fresh && !force ? " (cached)" : ` (fetched ${langs.map(langLabel).join(", ")})`}`);
+      } catch (e) {
+        show.failed.push(label);
+        log(`Episodes: ${show.title} · ${label} · FAILED (${e.message})`);
+      }
+      tick();
+    }));
+    return { listCached, episodesCached, instalments: seasons.length };
+  }
+
+  async function fetchSeasonEpisodes(season, langs) {
     const lists = await Promise.all(langs.map((audio) => fetchEpisodes(season.id, audio)));
     const byKey = new Map();
     lists.forEach((list, idx) => {
@@ -344,8 +473,35 @@
       }
     });
     const episodes = [...byKey.values()].sort(episodeSeqOrder);
-    await store.set(cacheKey, { fetchedAt: Date.now(), episodes });
+    await store.set(seasonKey(langs, season.id), { fetchedAt: Date.now(), episodes, fp: season.fp });
     return episodes;
+  }
+
+  // Fold the player frame's samples into the playhead cache as hints. A hint
+  // only wins over a cached record it exceeds, and never over Crunchyroll's own
+  // completed flag.
+  async function mergeObservations(playheads) {
+    const keys = (await store.keys()).filter((k) => k.startsWith(OBS_PREFIX));
+    let merged = 0;
+    for (const k of keys) {
+      const obs = await store.get(k);
+      const id = k.slice(OBS_PREFIX.length);
+      const cur = playheads[id];
+      if (obs && Number.isFinite(obs.playhead) && !(cur && (cur.fully_watched || (cur.playhead || 0) >= obs.playhead))) {
+        playheads[id] = { playhead: obs.playhead, fully_watched: false, observed: true };
+        merged++;
+      }
+    }
+    if (keys.length) await store.remove(keys);
+    return merged;
+  }
+
+  // Drop cache entries this run did not touch (old language combinations,
+  // shows removed from the watchlist, the retired per-instalment date cache).
+  async function sweepCaches(usedKeys) {
+    const stale = (await store.keys()).filter((k) => /^(season:|seasons:|inst-start:|obs:)/.test(k) && !usedKeys.has(k));
+    if (stale.length) await store.remove(stale);
+    return stale.length;
   }
 
   const seqOf = (e) => (Number.isFinite(e.seq) ? e.seq : Number.isFinite(e.n) ? e.n : Infinity);
@@ -382,10 +538,14 @@
   }
 
   /** Fetch everything needed to rank: watchlist, episodes per instalment, playheads. */
-  async function fetchData({ force = false, langs, onStatus, onProgress, onLog }) {
+  async function fetchData({ force = false, langs, fraction, highWater, onStatus, onProgress, onLog }) {
     const log = onLog || (() => {});
     const tracker = makeTracker(onProgress);
-    const langTag = langs.map(langLabel).join(", ");
+
+    // Known playheads from earlier runs, plus anything the player frame observed.
+    const known = (!force && (await store.get(PLAYHEADS_KEY))) || {};
+    const observed = await mergeObservations(known);
+    if (observed) log(`Playheads: ${observed} position${observed === 1 ? "" : "s"} noted while watching`);
 
     tracker.phase("Reading watchlist", 1);
     onStatus("Reading your watchlist…");
@@ -405,51 +565,60 @@
       };
     });
 
-    // Phase 2: one request per show. Phases 3 and 4 are provisional totals until known.
-    onStatus(`Loading seasons for ${shows.length} shows…`);
-    const seasonsPhase = tracker.phase("Loading seasons", shows.length);
-    const seasonJobs = [];
+    // Phase 2: one unit per show (its seasons list) plus one per instalment as
+    // they become known. Each unit is a request or two, or a cache hit.
+    onStatus(`Loading seasons and episodes for ${shows.length} shows…`);
+    const phase = tracker.phase("Loading shows", shows.length);
+    const stats = { instalments: 0, episodesCached: 0, listsCached: 0 };
     await mapLimit(shows, CONCURRENCY, async (show) => {
       try {
-        const seasons = canonicalSeasons(await fetchSeasons(show.seriesId));
-        seasons.forEach((s, order) => seasonJobs.push({ show, season: s, order }));
-        log(`Seasons: ${show.title} · ${seasons.length} instalment${seasons.length === 1 ? "" : "s"}`);
+        const r = await loadShow(show, {
+          force, langs, fraction, playheads: known, log,
+          onInstalments: (n) => { stats.instalments += n; tracker.retotal(phase.total + n); },
+          tick: () => tracker.tick(),
+        });
+        stats.episodesCached += r.episodesCached;
+        if (r.listCached) stats.listsCached++;
       } catch (e) {
         show.error = `seasons: ${e.message}`;
         log(`Seasons: ${show.title} · FAILED (${e.message})`);
+        tracker.tick();
       }
-      tracker.tick();
-    });
-    tracker.finish();
-
-    // Phase 3: one unit per instalment (each unit is `langs.length` requests, or a cache hit).
-    onStatus(`Loading episodes for ${seasonJobs.length} instalments (${langTag})…`);
-    tracker.phase("Loading episodes", seasonJobs.length);
-    let cachedCount = 0;
-    await mapLimit(seasonJobs, CONCURRENCY, async ({ show, season, order }) => {
-      try {
-        const eps = await loadSeason(season, langs, force);
-        show.episodes.push(...eps.map((e) => ({ ...e, catalogueOrder: order })));
-        if (eps.fromCache) cachedCount++;
-        log(`Episodes: ${show.title} · ${season.title || season.id} · ${eps.length} ep${eps.length === 1 ? "" : "s"}${eps.fromCache ? " (cached)" : ` (${langTag})`}`);
-      } catch (e) {
-        show.failed.push(season.title || season.id);
-        log(`Episodes: ${show.title} · ${season.title || season.id} · FAILED (${e.message})`);
-      }
-      tracker.tick();
     });
     tracker.finish();
     for (const show of shows) assignInstalmentOrder(show);
 
-    // Phase 4: one unit per 80 ids.
-    const ids = [];
-    for (const show of shows) for (const ep of show.episodes) for (const v of Object.values(ep.versions)) ids.push(v.id);
-    const batches = Math.max(1, Math.ceil(ids.length / 80));
-    onStatus(`Checking what you have already watched (${ids.length} episode versions)…`);
+    // Phase 3: playheads, one unit per 80 ids. An episode already known to be
+    // watched in any language (under the current threshold), or preceding one
+    // that is while the high-water rule is on, is not asked about again in any
+    // language: a position only ever moves forward. Full reload starts from nothing.
+    const ids = [], toFetch = [], playheads = {};
+    for (const show of shows) {
+      const eps = [...show.episodes].sort(episodeOrder);
+      const done = eps.map((ep) => Object.values(ep.versions).some((v) => { const r = known[v.id]; return r && !r.observed && isWatched(r, v.dur, fraction); }));
+      const last = highWater ? done.lastIndexOf(true) : -1;
+      eps.forEach((ep, i) => {
+        for (const v of Object.values(ep.versions)) {
+          ids.push(v.id);
+          if (done[i] || i < last) { if (known[v.id]) playheads[v.id] = known[v.id]; } else toFetch.push(v.id);
+        }
+      });
+    }
+    const batches = Math.max(1, Math.ceil(toFetch.length / C.api.playheads.batchSize));
+    onStatus(`Checking what you have already watched (${toFetch.length} of ${ids.length} episode versions)…`);
     tracker.phase("Checking playheads", batches);
-    const playheads = await fetchPlayheads(ids, (i, n, got) => { log(`Playheads: batch ${i}/${n} · ${got} with progress`); tracker.tick(); });
+    const fetched = await fetchPlayheads(toFetch, (i, n, got) => { log(`Playheads: batch ${i}/${n} · ${got} with progress`); tracker.tick(); });
     tracker.finish();
-    log(`Done in ${tracker.elapsed().toFixed(1)}s · ${seasonJobs.length} instalments (${cachedCount} from cache) · ${ids.length} versions checked`);
+    for (const id of toFetch) { const rec = fetched[id] || known[id]; if (rec) playheads[id] = rec; } // server record wins; a hint stands in only where there is none
+    // Persist only ids on today's watchlist, so removed shows fall out of the cache.
+    try { await store.set(PLAYHEADS_KEY, playheads); } catch (e) { console.warn(`[${APP_NAME}] could not cache playheads:`, e); }
+    if (force) {
+      const used = new Set();
+      for (const show of shows) { used.add(seasonsListKey(show.seriesId)); for (const ep of show.episodes) used.add(seasonKey(langs, ep.inst)); }
+      const swept = await sweepCaches(used);
+      if (swept) log(`Cache: removed ${swept} stale entr${swept === 1 ? "y" : "ies"}`);
+    }
+    log(`Done in ${tracker.elapsed().toFixed(1)}s · ${stats.instalments} instalments (${stats.episodesCached} from cache, ${stats.listsCached}/${shows.length} season lists from cache) · ${ids.length} versions (${ids.length - toFetch.length} known watched, ${toFetch.length} checked in ${toFetch.length ? batches : 0} batch${batches === 1 ? "" : "es"})`);
     return { shows, playheads, languages: langs, builtAt: Date.now(), showCount: shows.length };
   }
 
@@ -621,8 +790,29 @@
     ]);
   }
 
+  // ------------------------------------------------------- update check
+  const versionNum = (v) => String(v).split(".").map((n) => parseInt(n, 10) || 0);
+  const isNewer = (a, b) => { const x = versionNum(a), y = versionNum(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+  async function checkForUpdate() {
+    if (!updateEl) return;
+    updateEl.hidden = true;
+    if (!prefs.checkUpdates || VERSION === "dev") return;
+    let rec = await store.get(UPDATE_CHECK_KEY);
+    if (!rec || Date.now() - rec.at > DAY) {
+      try {
+        const r = await fetch(MANIFEST_URL, { cache: "no-store" });
+        if (!r.ok) throw new Error(String(r.status));
+        const j = await r.json();
+        if (typeof j.version !== "string") throw new Error("no version");
+        rec = { at: Date.now(), version: j.version };
+        await store.set(UPDATE_CHECK_KEY, rec);
+      } catch (e) { console.debug(`[${APP_NAME}] update check skipped:`, e.message); return; }
+    }
+    if (isNewer(rec.version, VERSION)) { updateEl.textContent = `v${rec.version} available`; updateEl.hidden = false; }
+  }
+
   // ------------------------------------------------------------ ui: state
-  let root, statusEl, progressEl, gridsEl, toggleBtn, modal, taglineEl, etaEl, logEl, logWrap, logToggle;
+  let root, statusEl, progressEl, gridsEl, toggleBtn, modal, taglineEl, etaEl, logEl, logWrap, logToggle, updateEl;
   const tagline = (p) => `newest unwatched episode first · audio: ${p.languages.map(langLabel).join(" › ")}${p.strictLanguages ? "" : " › any"}`;
   let data = null, view = null, prefs = { ...DEFAULT_PREFS };
   let prevHtmlOverflow = "";
@@ -688,7 +878,7 @@
     setProgress(0, null, "Starting");
     const started = Date.now();
     try {
-      data = await fetchData({ force, langs: prefs.languages, onStatus: setStatus, onProgress: setProgress, onLog: appendLog });
+      data = await fetchData({ force, langs: prefs.languages, fraction: prefs.watchedPct / 100, highWater: prefs.highWater, onStatus: setStatus, onProgress: setProgress, onLog: appendLog });
       render();
       const secs = ((Date.now() - started) / 1000).toFixed(1);
       setStatus(`${data.showCount} shows · updated ${new Date(data.builtAt).toLocaleTimeString()} · loaded in ${secs}s`);
@@ -717,6 +907,7 @@
     const toggle = (key) => el("input", { type: "checkbox", checked: draft[key], onchange: (ev) => { draft[key] = ev.target.checked; } });
     const skipIntro = toggle("skipIntro"), skipCredits = toggle("skipCredits"), skipRecap = toggle("skipRecap");
     const strict = toggle("strictLanguages");
+    const checkUpdates = toggle("checkUpdates");
     draft.languages = [...draft.languages];
     // Ordered language picker: chosen languages first (in priority order) with
     // up/down controls, then the rest alphabetically.
@@ -752,6 +943,7 @@
       savePrefs(prefs);
       taglineEl.textContent = tagline(prefs);
       close();
+      checkForUpdate();
       if (prefs.languages.join(",") !== before) load(false); // new languages need new episode lists
       else render();
     };
@@ -776,6 +968,8 @@
         setting("Skip intro", "Click Crunchyroll's \"Skip Intro\" button as soon as it appears.", [skipIntro]),
         setting("Skip credits", "Click \"Skip Credits\" as soon as it appears.", [skipCredits]),
         setting("Skip recap", "Click \"Skip Recap\" as soon as it appears. Off by default: recaps are sometimes worth watching.", [skipRecap]),
+        el("h3", { text: "Updates" }),
+        setting("Check for new versions", "Once a day, read the version number from the project's GitHub repository and show a notice in the header if it is newer. The only request this extension makes to anything other than crunchyroll.com.", [checkUpdates]),
         el("div", { class: "bwl-modal-actions" }, [
           el("button", { text: "Cancel", onclick: close }),
           el("button", { class: "bwl-primary", text: "Save", onclick: save }),
@@ -807,14 +1001,18 @@
     root.append(
       el("div", { class: "bwl-bar" }, [
         el("div", { class: "bwl-heading" }, [
-          el("h1", {}, [el("a", { href: "https://www.crunchyroll.com/", class: "bwl-home", title: "Crunchyroll home", text: APP_NAME })]),
+          el("h1", {}, [
+            el("a", { href: "https://www.crunchyroll.com/", class: "bwl-home", title: "Crunchyroll home", text: APP_NAME }),
+            el("a", { href: REPO_URL, target: "_blank", rel: "noopener", class: "bwl-version", title: "Open the project on GitHub", text: `v${VERSION}` }),
+            (updateEl = el("a", { href: REPO_URL, target: "_blank", rel: "noopener", class: "bwl-update", title: "A newer version is on GitHub: download it and reload the extension", hidden: true })),
+          ]),
           (taglineEl = el("div", { class: "bwl-tagline", text: tagline(prefs) })),
         ]),
         el("span", { class: "bwl-spacer" }),
         el("a", { href: "/search", class: "bwl-iconbtn", title: "Search", "aria-label": "Search" }, [searchIcon()]),
         el("button", { text: "Settings", onclick: openSettings }),
-        el("button", { text: "Refresh", title: "Re-check playheads and new episodes (uses cached episode lists)", onclick: () => load(false) }),
-        el("button", { text: "Full reload", title: "Ignore cache and refetch everything", onclick: () => load(true) }),
+        el("button", { text: "Refresh", title: "Re-check airing shows and unwatched episodes; everything known to be finished is skipped", onclick: () => load(false) }),
+        el("button", { text: "Full reload", title: "Forget every cache and refetch everything, including watched positions", onclick: () => load(true) }),
         el("button", { class: "bwl-primary", text: "Normal Watchlist", title: "Back to Crunchyroll's own watchlist", onclick: () => hide(true) }),
       ]),
       el("div", { class: "bwl-progress" }, [progressEl]),
@@ -835,6 +1033,7 @@
     prefs = loadPrefs(); // also (re)writes the cookie: defaults on first run, refreshed clock otherwise
     taglineEl.textContent = tagline(prefs);
     writeCookie(ACTIVE_COOKIE, "1");
+    checkForUpdate();
     if (showing) return;
     showing = true;
     root.hidden = false;
@@ -847,9 +1046,26 @@
         data = cached;
         render();
         setStatus(`Showing cached view from ${new Date(cached.builtAt).toLocaleString()} · refreshing…`);
+        await quickRefresh();
       }
     }
     load(false);
+  }
+
+  // Back from watching something: re-read that one show's unwatched positions
+  // (one request) so its card is right before the full refresh gets there.
+  async function quickRefresh() {
+    if (loading || !data) return;
+    const w = await store.get(WATCHING_KEY);
+    if (!w || Date.now() - w.at > TTL.watching) return;
+    const show = data.shows.find((s) => s.episodes.some((ep) => Object.values(ep.versions).some((v) => v.id === w.id)));
+    if (!show) return;
+    const fraction = prefs.watchedPct / 100;
+    const ids = [];
+    for (const ep of show.episodes) for (const v of Object.values(ep.versions)) if (!isWatched(data.playheads[v.id], v.dur, fraction)) ids.push(v.id);
+    if (!ids.length) return;
+    try { Object.assign(data.playheads, await fetchPlayheads(ids)); render(); }
+    catch (e) { console.warn(`[${APP_NAME}] quick refresh failed:`, e.message); }
   }
 
   // userInitiated: the user chose "Normal Watchlist", so stop auto-reopening.
@@ -876,20 +1092,30 @@
   // editorial order (OVAs and movies appended at the end). We reorder the
   // option nodes to our air-date order. Moving the existing nodes keeps React's
   // event handling intact; an observer re-applies the order after re-renders.
-  const INST_START_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   const instalmentOrderCache = new Map(); // seriesId -> Promise<{ titles: string[] }>
 
+  // Shows on your watchlist already have their seasons and episodes cached by
+  // the overlay; only shows outside it cost requests here (seasons list, then
+  // one episode request per instalment in your first language, kept for a week).
   async function instalmentOrderFor(seriesId) {
     if (instalmentOrderCache.has(seriesId)) return instalmentOrderCache.get(seriesId);
     const job = (async () => {
-      const seasons = canonicalSeasons(await fetchSeasons(seriesId));
+      const langs = currentPrefs().languages;
+      const cachedList = await store.get(seasonsListKey(seriesId));
+      const seasons = cachedList && Array.isArray(cachedList.seasons) ? cachedList.seasons : canonicalSeasons(await fetchSeasons(seriesId));
       const starts = await Promise.all(seasons.map(async (season, i) => {
+        const main = await store.get(seasonKey(langs, season.id));
+        if (main) {
+          let start = null;
+          for (const e of main.episodes) { const d = epChrono(e); if (d !== null && (start === null || d < start)) start = d; }
+          return { i, season, start };
+        }
         const key = `inst-start:${season.id}`;
         let rec = await store.get(key);
-        if (!rec || Date.now() - rec.at > INST_START_TTL_MS) {
+        if (!rec || Date.now() - rec.at > TTL.latestDormant) {
           let start = null;
           try {
-            const eps = await fetchEpisodes(season.id, currentPrefs().languages[0]);
+            const eps = await fetchEpisodes(season.id, langs[0]);
             for (const e of eps) { const d = ts(e.episode_air_date) ?? ts(releaseDate(e)); if (d !== null && (start === null || d < start)) start = d; }
           } catch (e) { console.warn(`[${APP_NAME}] instalment start lookup failed for ${season.title}:`, e.message); }
           rec = { start, at: Date.now() };
@@ -968,6 +1194,8 @@
   // active when the user left (e.g. to watch an episode) or if asked via hash.
   const onListPage = () => C.dom.listPagePath.test(location.pathname);
   function init() {
+    const watching = location.pathname.match(C.dom.watchIdFromPath);
+    if (watching) store.set(WATCHING_KEY, { id: watching[1], at: Date.now() });
     if (onListPage()) {
       mountToggle();
       if (location.hash === OPEN_HASH || readCookie(ACTIVE_COOKIE) === "1") show();
