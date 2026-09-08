@@ -4,6 +4,8 @@ These tests pin down every assumption CR Watchlist Plus makes about Crunchyroll 
 
 The assumptions themselves live in one file at the repo root, [`contract.js`](../contract.js), which the content script reads at runtime and both runners below import. Fix a contract change there and the extension and the tests follow together.
 
+> **Status (Sept 2026).** Verified against the live site: the API contract (`api.spec.js`, 5/5) and the public page-markup checks in `dom.spec.js` (2/2), under installed Google Chrome. **Not yet verified end to end:** `extension.spec.js` (branded Chrome refuses to load the unpacked extension; Playwright's Chromium failed to start on the development machine), the opt-in player tests, and the in-page checker `inpage/contract-check.js`, which has been syntax-checked and mirrors the passing Playwright checks but has not yet been run in a real browser. Treat those three as prototypes until this note is updated.
+
 There are two runners, because Crunchyroll treats automated browsers with suspicion:
 
 | Runner | Where it runs | Good for | Cannot do |
