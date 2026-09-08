@@ -92,6 +92,10 @@ To prefer Japanese over English, change `PREFERRED` at the top of `content.js`.
 
 The extension reads your watchlist, episode metadata and playheads from crunchyroll.com and stores derived data in the extension's local storage on your machine. It sends nothing anywhere else and never modifies your Crunchyroll account.
 
+## How it was built
+
+This extension was written with an AI coding assistant (Claude, by Anthropic) working in Claude Code, directed and tested by the repository owner. The AI reverse-engineered the endpoints from the live site's network traffic, wrote the code, and verified behaviour against a real watchlist; design decisions such as the 75% watched threshold, the high-water rule and the instalment ordering came out of that back-and-forth. Treat the code accordingly: read it before you trust it.
+
 ## Licence
 
 MIT. Not affiliated with or endorsed by Crunchyroll.
