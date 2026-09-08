@@ -149,7 +149,8 @@
     seq: e.sequence_number,
     season: e.season_number,
     title: e.title,
-    date: releaseDate(e),
+    date: releaseDate(e),          // when it became available on Crunchyroll (drives "newness")
+    air: e.episode_air_date || null, // original broadcast/theatrical date (drives chronology)
     dur: e.duration_ms,
     thumb: pickThumb(e.images),
     slug: e.slug_title || "",
@@ -174,7 +175,7 @@
   }
 
   async function loadSeason(season, force) {
-    const cacheKey = `season:${season.id}`;
+    const cacheKey = `season:v2:${season.id}`;
     if (!force) {
       const cached = await store.get(cacheKey);
       if (cached && Date.now() - cached.fetchedAt < EPISODES_TTL_MS) return cached.episodes;
@@ -187,7 +188,8 @@
       for (const raw of list) {
         const e = slim(raw);
         if (e.audio !== wanted) continue; // the API fell back to another language: no version in `wanted`
-        const rec = byKey.get(e.key) || { key: e.key, n: e.n, seq: e.seq, season: e.season, title: e.title, thumb: e.thumb, versions: {} };
+        const rec = byKey.get(e.key) || { key: e.key, n: e.n, seq: e.seq, season: e.season, inst: season.id, instTitle: season.title, air: e.air, title: e.title, thumb: e.thumb, versions: {} };
+        rec.air = rec.air || e.air;
         rec.versions[wanted] = { id: e.id, date: e.date, dur: e.dur };
         rec.thumb = rec.thumb || e.thumb;
         byKey.set(e.key, rec);
@@ -227,11 +229,12 @@
     await mapLimit(seasonJobs, CONCURRENCY, async ({ show, season, order }) => {
       try {
         const eps = await loadSeason(season, force);
-        show.episodes.push(...eps.map((e) => ({ ...e, sOrder: order })));
+        show.episodes.push(...eps.map((e) => ({ ...e, catalogueOrder: order })));
       } catch (e) {
         show.error = e.message;
       }
     }, (d, n) => onProgress(0.2 + d / n * 0.6));
+    for (const show of shows) assignInstalmentOrder(show);
 
     onStatus("Checking what you have already watched…");
     const ids = [];
@@ -242,12 +245,30 @@
     return { shows, playheads, builtAt: Date.now(), showCount: shows.length };
   }
 
-  // Series chronology for the high-water rule: original (Japanese) release date,
-  // falling back to the English date, then catalogue order. Catalogue order alone
-  // is unsafe because Crunchyroll lists OVA/movie "seasons" after the main run,
-  // and a single played special would then swallow the episode you are mid-way through.
-  const chrono = (e) => (e.versions["ja-JP"] && e.versions["ja-JP"].date) || (e.versions["en-US"] && e.versions["en-US"].date) || "";
-  const episodeOrder = (a, b) => chrono(a).localeCompare(chrono(b)) || (a.sOrder - b.sOrder) || ((a.seq ?? a.n) - (b.seq ?? b.n));
+  /**
+   * Instalment chronology. Crunchyroll's own season order is editorial: OVA and
+   * movie "seasons" are often appended after the main run (Slime lists both OVA
+   * collections after Season 4). We order instalments by the original air date of
+   * their first episode, then keep Crunchyroll's episode sequence inside each
+   * instalment. Air date, not Crunchyroll availability date, because catalogue
+   * back-fills (a 2019 movie added in 2026) would otherwise land in the wrong place.
+   */
+  const epChrono = (e) => e.air || (e.versions["ja-JP"] && e.versions["ja-JP"].date) || (e.versions["en-US"] && e.versions["en-US"].date) || "";
+  function assignInstalmentOrder(show) {
+    const start = new Map(); // instalment id -> earliest air date
+    const catalogue = new Map();
+    for (const e of show.episodes) {
+      const d = epChrono(e);
+      if (d && (!start.has(e.inst) || d < start.get(e.inst))) start.set(e.inst, d);
+      catalogue.set(e.inst, e.catalogueOrder);
+    }
+    const ordered = [...catalogue.keys()].sort((a, b) =>
+      (start.get(a) || "9999").localeCompare(start.get(b) || "9999") || (catalogue.get(a) - catalogue.get(b)));
+    const rankOf = new Map(ordered.map((id, i) => [id, i]));
+    for (const e of show.episodes) e.sOrder = rankOf.get(e.inst);
+    show.instalments = ordered.map((id) => ({ id, title: show.episodes.find((e) => e.inst === id)?.instTitle, start: start.get(id) || null }));
+  }
+  const episodeOrder = (a, b) => (a.sOrder - b.sOrder) || ((a.seq ?? a.n) - (b.seq ?? b.n));
 
   /**
    * Rank the fetched data. Pure: re-run it when a preference changes.
@@ -255,9 +276,10 @@
    *   newestUnwatched: the unwatched episode with the latest "arrival" date,
    *     where arrival = English release if an English version exists, else Japanese.
    *   newestAny: the latest arrival regardless of watched state (for caught-up shows).
-   * With prefs.highWater on, every episode released before the last one you
-   * actually watched is assumed watched too. This covers history that never made
-   * it into Crunchyroll (e.g. pre-merger Funimation) and old specials you skipped.
+   * With prefs.highWater on, every episode that precedes the last one you
+   * actually watched (instalments in air-date order, episodes in sequence) is
+   * assumed watched too. This covers history that never made it into Crunchyroll
+   * (e.g. pre-merger Funimation) and old specials you skipped.
    */
   function rank(data, prefs) {
     const { shows, playheads } = data;
@@ -325,13 +347,29 @@
   const fmtDate = (iso) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   const langLabel = (l) => (l === "en-US" ? "EN" : l === "ja-JP" ? "JA" : l);
 
+  // "Season 2" -> "S2 E9". Other instalments (movie, OVA collection) keep their
+  // title, minus the series name and audio suffixes Crunchyroll sometimes prepends.
+  function instalmentLabel(show, ep) {
+    let t = ep.instTitle || "";
+    if (show.title && t.toLowerCase().startsWith(show.title.toLowerCase())) t = t.slice(show.title.length);
+    t = t.replace(/\((English|Japanese|[A-Za-z]+) Dub\)/i, "").replace(/^[\s:\-–]+|[\s:\-–]+$/g, "").trim();
+    const m = /^Season\s*(\d+)/i.exec(t);
+    if (m) return `S${m[1]} E${ep.n}`;
+    const roman = { II: 2, III: 3, IV: 4, V: 5, VI: 6 }[t.toUpperCase()];
+    if (roman) return `S${roman} E${ep.n}`;
+    if (!t) return `S${ep.season ?? "?"} E${ep.n}`;
+    const short = t.length > 30 ? t.slice(0, 28) + "…" : t;
+    const single = show.episodes.filter((e) => e.inst === ep.inst).length === 1;
+    return single ? short : `${short} E${ep.n}`;
+  }
+
   function card(show, { done }) {
     const c = show.newestUnwatched || show.newestAny;
     const href = c ? `/watch/${c.id}/${c.ep.slug || ""}` : `/series/${show.seriesId}/${show.slug}`;
     const thumb = (c && c.ep.thumb) || show.panelThumb;
     const lines = [];
     if (c) {
-      const epLabel = `S${c.ep.season ?? "?"} E${c.ep.n}`;
+      const epLabel = instalmentLabel(show, c.ep);
       lines.push(el("div", { class: "bwl-line" }, [
         el("strong", { text: done ? "Latest: " : (c.started ? "Continue: " : "Next new: ") }),
         document.createTextNode(`${epLabel} · ${langLabel(c.lang)} · `),
