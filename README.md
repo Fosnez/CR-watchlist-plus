@@ -21,7 +21,9 @@ The first load fetches every season of every show (a few hundred small requests,
 
 ## Controls
 
-- **Hide caught-up shows** hides the greyed section.
+- **Watched at N%** slider (default 75). An episode counts as watched once its playhead passes this share of the runtime, or is within five minutes of the end. Crunchyroll only sets its own completed flag if you sit through the ending theme, so credits-skippers otherwise see finished episodes resurface.
+- **Assume earlier episodes watched** (on by default). Everything released before the last episode you actually watched in a series is treated as watched. This covers history Crunchyroll never recorded, such as pre-merger Funimation viewing, and old OVAs or movies you skipped. Order is by original release date, not Crunchyroll's catalogue order, which lists specials after the main run.
+- **Hide caught-up** hides the greyed section.
 - **Refresh** re-reads your watchlist and playheads, reusing cached episode lists.
 - **Full reload** throws the cache away and refetches everything. Use it if a newly released episode is not showing up within 12 hours.
 
@@ -33,7 +35,10 @@ For each show, for each episode:
 
 1. Collect the Japanese and English versions (their ids and release dates).
 2. Arrival date = English release if an English version exists, else Japanese.
-3. The episode is *watched* if **either** version is fully watched in your playheads, **or** its playhead is past 75% or within five minutes of the end. Crunchyroll only sets its own completed flag if you sit through the ending theme; skipping the credits leaves episodes at roughly 80 to 90% and otherwise they would resurface as unwatched. Tune `WATCHED_FRACTION` and `WATCHED_TAIL_SECONDS` in `content.js`.
+3. The episode is *watched* if **either** version is fully watched in your playheads, **or** its playhead is past the slider threshold (default 75%) or within five minutes of the end.
+4. With the high-water rule on, every episode released before the last watched one is also treated as watched.
+
+Settings re-rank instantly from cached data; no refetch.
 
 A show's sort key is the latest arrival date among its unwatched, already-released episodes. Shows with no unwatched episodes are ranked by their latest arrival overall and shown in the "Caught up" section.
 

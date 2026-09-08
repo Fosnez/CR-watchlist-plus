@@ -167,3 +167,15 @@
   text-align: center;
   color: #8a8a8a;
 }
+
+.bwl-slider {
+  width: 110px;
+  accent-color: #f47521;
+  vertical-align: middle;
+  margin: 0 6px;
+}
+.bwl-pct {
+  min-width: 38px;
+  color: #fff;
+  font-weight: 600;
+}
