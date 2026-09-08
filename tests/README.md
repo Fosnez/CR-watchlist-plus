@@ -61,7 +61,7 @@ Tests run headed, one at a time, using your installed Google Chrome by default.
 2. DevTools → Console, paste the file's contents, then run `await crwpContractCheck()`.
 3. Read the PASS / FAIL / SKIP lines and the summary table. FAIL lines name the contract entry and what was seen.
 
-Claude for Chrome (or any tool that can execute JavaScript in your tab) can run the same script for you; that is how it was verified during development.
+Claude for Chrome (or any tool that can execute JavaScript in your tab) can run the same script for you.
 
 ## When a check fails
 
@@ -73,6 +73,6 @@ Claude for Chrome (or any tool that can execute JavaScript in your tab) can run 
 
 ## Limits
 
-- **Extension loading in Playwright.** Google Chrome 137 and later ignore `--load-extension`, so `extension.spec.js` skips under the default browser. Playwright's own Chromium honours it (`CRWP_BROWSER=chromium`), but that build failed to start on the development machine (a side-by-side configuration error), so the extension's end-to-end behaviour was verified with the in-page checker and by hand instead.
+- **Extension loading in Playwright.** Google Chrome 137 and later ignore `--load-extension`, so `extension.spec.js` skips under the default browser. Playwright's own Chromium honours it (`CRWP_BROWSER=chromium`), but that build failed to start on the development machine (a side-by-side configuration error), so the extension's end-to-end behaviour was verified by hand (driving the real browser) rather than by this spec.
 - **The player.** Crunchyroll does not mount the video player in automated or hidden tabs, so the player tests are opt-in and expected to skip in most environments. The in-page checker on a real `/watch/` page covers the same checks.
 - **Fixtures.** The DOM tests use *That Time I Got Reincarnated as a Slime* because it has numbered seasons and OVA collections. If it leaves the catalogue, change `SERIES_URL` and `EPISODE_ID` in `dom.spec.js` and `extension.spec.js`.
