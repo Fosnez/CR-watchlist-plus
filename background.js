@@ -1,13 +1,22 @@
-// Toolbar button: open (or focus) the Crunchyroll watchlist with the
-// Better Watchlist overlay requested via the URL hash.
-const TARGET = "https://www.crunchyroll.com/watchlist#better-watchlist";
+// Toolbar button: show the overlay on an open watchlist tab, or open one.
+const WATCHLIST = "https://www.crunchyroll.com/watchlist";
+const OPEN_URL = WATCHLIST + "#cr-watchlist-plus";
 
 chrome.action.onClicked.addListener(async () => {
-  const tabs = await chrome.tabs.query({ url: "https://www.crunchyroll.com/watchlist*" });
-  if (tabs.length) {
-    await chrome.tabs.update(tabs[0].id, { active: true, url: TARGET });
-    await chrome.windows.update(tabs[0].windowId, { focused: true });
-  } else {
-    await chrome.tabs.create({ url: TARGET });
+  const tabs = await chrome.tabs.query({ url: WATCHLIST + "*" });
+  const tab = tabs[0];
+  if (!tab || tab.id === undefined) {
+    await chrome.tabs.create({ url: OPEN_URL });
+    return;
   }
+  await chrome.tabs.update(tab.id, { active: true });
+  if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+  try {
+    // Ask the content script directly; a same-URL navigation would be a no-op.
+    const res = await chrome.tabs.sendMessage(tab.id, { type: "open" });
+    if (res && res.ok) return;
+  } catch {
+    // no content script in that tab (e.g. loaded before install): fall through
+  }
+  await chrome.tabs.update(tab.id, { url: OPEN_URL });
 });

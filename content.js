@@ -1,5 +1,5 @@
 /*
- * Better Watchlist for Crunchyroll — content script.
+ * CR Watchlist Plus — content script.
  *
  * Runs on crunchyroll.com in your logged-in session. Uses the same internal
  * JSON endpoints the site itself uses to:
@@ -17,38 +17,85 @@
   "use strict";
 
   // ---------------------------------------------------------------- config
+  const APP_NAME = "CR Watchlist Plus";
+  const TAGLINE = "newest unwatched episode first · EN preferred, JA fallback";
+  const OPEN_HASH = "#cr-watchlist-plus";
   const PREFERRED = ["en-US", "ja-JP"]; // order of preference
   const EPISODES_TTL_MS = 12 * 60 * 60 * 1000; // cache season episode lists 12h
   const CONCURRENCY = 6;
+  const DEFAULT_PREFS = { watchedPct: 75, highWater: true, hideDone: true };
   // Crunchyroll only sets `fully_watched` if you sit through the ending theme.
-  // Skipping the credits leaves the playhead at roughly 80-90%, so treat an episode as
-  // watched once you are past this fraction OR within this many seconds of the end.
-  const DEFAULT_WATCHED_PCT = 75; // adjustable in the UI
+  // Skipping the credits leaves the playhead at roughly 80-90%, so treat an
+  // episode as watched once past prefs.watchedPct OR within this many seconds
+  // of the end (the tail rule only applies to episodes longer than the tail).
   const WATCHED_TAIL_SECONDS = 300;
-  // Public client id the Crunchyroll web app uses for the cookie -> token grant.
+  // Crunchyroll's PUBLIC web-app client id ("noaihdevm_6iyg0a8l0q" with an
+  // empty secret), shipped in the site's own JS bundle. Not a secret and not
+  // tied to any user; it is what the site sends when it refreshes its token.
   const WEB_CLIENT_BASIC = "bm9haWhkZXZtXzZpeWcwYThsMHE6";
-  const DEVICE_ID = "8b0ec7a1-3f9b-4a3e-9c2f-0e1d2c3b4a59";
+  // Preferences live in a cookie on crunchyroll.com. Chrome caps cookie lifetime
+  // at 400 days; we ask for that and rewrite the cookie on every open, so in
+  // practice it never expires while the extension is in use.
+  const COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
+  const PREFS_COOKIE = "cr_watchlist_plus_prefs";
+  const ACTIVE_COOKIE = "cr_watchlist_plus_active";
+  const DATA_KEY = "data:v3";
+  const SEASON_KEY_PREFIX = `season:v3:${PREFERRED.join("+")}:`;
 
   // --------------------------------------------------------------- storage
-  // chrome.storage.local when running as an extension; localStorage fallback
-  // so the same file can be pasted into a console for testing.
-  const store = (() => {
-    const hasChrome = typeof chrome !== "undefined" && chrome.storage && chrome.storage.local;
-    if (hasChrome) {
-      return {
+  // Result cache: chrome.storage.local when running as an extension; a
+  // localStorage fallback so the same file can be pasted into the page console
+  // for testing. Preferences are NOT kept here; they live in the cookie only.
+  const isExtension = typeof chrome !== "undefined" && !!(chrome.storage && chrome.storage.local);
+  const store = isExtension
+    ? {
         get: (k) => chrome.storage.local.get(k).then((r) => r[k]),
         set: (k, v) => chrome.storage.local.set({ [k]: v }),
-        remove: (k) => chrome.storage.local.remove(k),
+      }
+    : {
+        get: async (k) => { try { const v = localStorage.getItem("bwl:" + k); return v ? JSON.parse(v) : undefined; } catch { return undefined; } },
+        set: async (k, v) => { try { localStorage.setItem("bwl:" + k, JSON.stringify(v)); } catch {} },
       };
+
+  const readCookie = (name) => {
+    const m = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/[$()*+.?[\\\]^{|}]/g, "\\$&") + "=([^;]*)"));
+    return m ? decodeURIComponent(m[1]) : null;
+  };
+  const writeCookie = (name, value, maxAge = COOKIE_MAX_AGE) => {
+    document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; SameSite=Lax; Secure`;
+  };
+  const deleteCookie = (name) => { document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax; Secure`; };
+
+  function sanitizePrefs(p) {
+    const out = { ...DEFAULT_PREFS };
+    if (p && typeof p === "object") {
+      if (Number.isFinite(p.watchedPct)) out.watchedPct = Math.min(100, Math.max(50, Math.round(p.watchedPct / 5) * 5));
+      if (typeof p.highWater === "boolean") out.highWater = p.highWater;
+      if (typeof p.hideDone === "boolean") out.hideDone = p.hideDone;
     }
-    return {
-      get: async (k) => {
-        try { const v = localStorage.getItem("bwl:" + k); return v ? JSON.parse(v) : undefined; } catch { return undefined; }
-      },
-      set: async (k, v) => { try { localStorage.setItem("bwl:" + k, JSON.stringify(v)); } catch {} },
-      remove: async (k) => { try { localStorage.removeItem("bwl:" + k); } catch {} },
-    };
-  })();
+    return out;
+  }
+  // First run writes the defaults; every later run rewrites the same values,
+  // which restarts the 400-day clock.
+  function loadPrefs() {
+    let raw = null;
+    try { raw = JSON.parse(readCookie(PREFS_COOKIE)); } catch { raw = null; }
+    const prefs = sanitizePrefs(raw);
+    savePrefs(prefs);
+    return prefs;
+  }
+  const savePrefs = (prefs) => writeCookie(PREFS_COOKIE, JSON.stringify(prefs));
+
+  // Per-install device id for the token grant (not a user identifier; it just
+  // stops every install from presenting the same device to Crunchyroll).
+  async function deviceId() {
+    let id = await store.get("device_id");
+    if (!id) {
+      id = (crypto.randomUUID && crypto.randomUUID()) || "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = (Math.random() * 16) | 0; return (c === "x" ? r : (r & 3) | 8).toString(16); });
+      await store.set("device_id", id);
+    }
+    return id;
+  }
 
   // ------------------------------------------------------------------- api
   let token = null; // { access_token, account_id, expiresAt }
@@ -58,11 +105,8 @@
     const r = await fetch("/auth/v1/token", {
       method: "POST",
       credentials: "include",
-      headers: {
-        Authorization: "Basic " + WEB_CLIENT_BASIC,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: `grant_type=etp_rt_cookie&device_type=Chrome&device_id=${DEVICE_ID}`,
+      headers: { Authorization: "Basic " + WEB_CLIENT_BASIC, "Content-Type": "application/x-www-form-urlencoded" },
+      body: `grant_type=etp_rt_cookie&device_type=Chrome&device_id=${await deviceId()}`,
     });
     if (!r.ok) throw new Error(`Token exchange failed (${r.status}). Are you logged in to Crunchyroll?`);
     const j = await r.json();
@@ -70,14 +114,11 @@
     return token;
   }
 
-  async function api(path, attempt = 0) {
+  async function api(path, retries = { auth: 0, rate: 0 }) {
     const t = await getToken();
     const r = await fetch(path, { headers: { Authorization: "Bearer " + t.access_token } });
-    if (r.status === 401 && attempt === 0) { token = null; return api(path, 1); }
-    if (r.status === 429 && attempt < 3) {
-      await sleep(1000 * (attempt + 1));
-      return api(path, attempt + 1);
-    }
+    if (r.status === 401 && retries.auth < 1) { token = null; return api(path, { ...retries, auth: retries.auth + 1 }); }
+    if (r.status === 429 && retries.rate < 3) { await sleep(1000 * (retries.rate + 1)); return api(path, { ...retries, rate: retries.rate + 1 }); }
     if (!r.ok) throw new Error(`${r.status} ${path.split("?")[0]}`);
     return r.json();
   }
@@ -88,73 +129,57 @@
     let start = 0;
     for (;;) {
       const j = await api(`/content/v2/discover/${t.account_id}/watchlist?n=100&start=${start}&order=desc&locale=en-US`);
-      items.push(...(j.data || []));
-      if (!j.data || j.data.length < 100 || items.length >= (j.total || 0)) break;
+      const page = j.data || [];
+      items.push(...page);
+      if (page.length < 100) break;
+      if (Number.isFinite(j.total) && items.length >= j.total) break;
       start += 100;
     }
     return items;
   }
 
-  const fetchSeasons = (seriesId) =>
-    api(`/content/v2/cms/series/${seriesId}/seasons?locale=en-US`).then((j) => j.data || []);
-
-  const fetchEpisodes = (seasonId, audio) =>
-    api(`/content/v2/cms/seasons/${seasonId}/episodes?locale=en-US&preferred_audio_language=${audio}`).then((j) => j.data || []);
+  const fetchSeasons = (seriesId) => api(`/content/v2/cms/series/${seriesId}/seasons?locale=en-US`).then((j) => j.data || []);
+  const fetchEpisodes = (seasonId, audio) => api(`/content/v2/cms/seasons/${seasonId}/episodes?locale=en-US&preferred_audio_language=${audio}`).then((j) => j.data || []);
 
   async function fetchPlayheads(ids) {
     const t = await getToken();
-    const out = new Map();
+    const out = {};
     for (let i = 0; i < ids.length; i += 80) {
       const chunk = ids.slice(i, i + 80);
       const j = await api(`/content/v2/${t.account_id}/playheads?content_ids=${chunk.join(",")}&locale=en-US`);
-      for (const p of j.data || []) out.set(p.content_id, p);
+      for (const p of j.data || []) out[p.content_id] = { playhead: p.playhead, fully_watched: !!p.fully_watched };
     }
     return out;
   }
 
   // ------------------------------------------------------------------ core
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const ts = (iso) => { const n = iso ? Date.parse(iso) : NaN; return Number.isNaN(n) ? null : n; };
 
   async function mapLimit(items, limit, fn, onProgress) {
-    const results = new Array(items.length);
     let next = 0, done = 0;
     async function worker() {
       while (next < items.length) {
         const i = next++;
-        try { results[i] = await fn(items[i], i); } catch (e) { results[i] = { error: e }; }
+        try { await fn(items[i], i); } catch (e) { console.error(`[${APP_NAME}]`, e); }
         done++;
         onProgress && onProgress(done, items.length);
       }
     }
     await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-    return results;
   }
 
   function isWatched(playhead, durationMs, fraction) {
     if (!playhead) return false;
     if (playhead.fully_watched) return true;
     const dur = (durationMs || 0) / 1000;
-    if (!dur || !playhead.playhead) return false;
-    return playhead.playhead / dur >= fraction || dur - playhead.playhead <= WATCHED_TAIL_SECONDS;
+    const pos = playhead.playhead || 0;
+    if (!dur || !pos) return false; // no duration known: only Crunchyroll's own flag can settle it
+    if (pos / dur >= fraction) return true;
+    return dur > WATCHED_TAIL_SECONDS && dur - pos <= WATCHED_TAIL_SECONDS;
   }
 
   const releaseDate = (e) => e.premium_available_date || e.availability_starts || e.upload_date || e.episode_air_date || null;
-
-  // Compact form of an episode entry kept in cache.
-  const slim = (e) => ({
-    id: e.id,
-    key: e.identifier || `${e.season_id}|${e.sequence_number}`,
-    audio: e.audio_locale,
-    n: e.episode_number ?? e.sequence_number,
-    seq: e.sequence_number,
-    season: e.season_number,
-    title: e.title,
-    date: releaseDate(e),          // when it became available on Crunchyroll (drives "newness")
-    air: e.episode_air_date || null, // original broadcast/theatrical date (drives chronology)
-    dur: e.duration_ms,
-    thumb: pickThumb(e.images),
-    slug: e.slug_title || "",
-  });
 
   function pickThumb(images) {
     const arr = images && images.thumbnail && images.thumbnail[0];
@@ -163,44 +188,70 @@
     return best.source;
   }
 
-  // Season versions collapse to one canonical season (the original-audio guid).
+  // One canonical instalment per original-audio season guid. Crunchyroll lists a
+  // row per audio version; keep the row that IS the original version if present.
   function canonicalSeasons(seasons) {
-    const seen = new Map();
+    const groups = new Map();
     for (const s of seasons) {
-      const versions = Array.isArray(s.versions) && s.versions.length ? s.versions : [{ guid: s.id, audio_locale: s.audio_locale, original: true }];
+      const versions = Array.isArray(s.versions) && s.versions.length ? [...s.versions] : [{ guid: s.id, audio_locale: s.audio_locale, original: true }];
+      versions.sort((a, b) => String(a.guid).localeCompare(String(b.guid)));
       const orig = versions.find((v) => v.original) || versions[0];
-      if (!seen.has(orig.guid)) seen.set(orig.guid, { id: orig.guid, number: s.season_number, title: s.title });
+      const g = groups.get(orig.guid) || { id: orig.guid, audio: orig.audio_locale, rows: [] };
+      g.rows.push(s);
+      groups.set(orig.guid, g);
     }
-    return [...seen.values()];
+    return [...groups.values()].map((g) => {
+      const row = g.rows.find((r) => r.audio_locale === g.audio) || g.rows.find((r) => r.id === g.id) || g.rows[0];
+      return { id: g.id, title: row.title || "", number: row.season_number };
+    });
   }
 
+  // Merge key that does not depend on which audio version a row came from.
+  const episodeKey = (raw, seasonId) => raw.identifier || `${seasonId}|${raw.season_number ?? ""}|${raw.sequence_number ?? raw.episode_number ?? raw.id}`;
+
   async function loadSeason(season, force) {
-    const cacheKey = `season:v2:${season.id}`;
+    const cacheKey = SEASON_KEY_PREFIX + season.id;
     if (!force) {
       const cached = await store.get(cacheKey);
       if (cached && Date.now() - cached.fetchedAt < EPISODES_TTL_MS) return cached.episodes;
     }
     const lists = await Promise.all(PREFERRED.map((audio) => fetchEpisodes(season.id, audio)));
-    // Merge per episode: one record with a version per audio language.
     const byKey = new Map();
     lists.forEach((list, idx) => {
       const wanted = PREFERRED[idx];
       for (const raw of list) {
-        const e = slim(raw);
-        if (e.audio !== wanted) continue; // the API fell back to another language: no version in `wanted`
-        const rec = byKey.get(e.key) || { key: e.key, n: e.n, seq: e.seq, season: e.season, inst: season.id, instTitle: season.title, air: e.air, title: e.title, thumb: e.thumb, versions: {} };
-        rec.air = rec.air || e.air;
-        rec.versions[wanted] = { id: e.id, date: e.date, dur: e.dur };
-        rec.thumb = rec.thumb || e.thumb;
-        byKey.set(e.key, rec);
+        const locale = raw.audio_locale || "und";
+        // The API falls back to another language when `wanted` has no version.
+        // Keep the row if it IS the wanted language, or if it is a language we
+        // never ask for (e.g. a Korean original) so such shows are not empty.
+        if (locale !== wanted && PREFERRED.includes(locale)) continue;
+        const key = episodeKey(raw, season.id);
+        const rec = byKey.get(key) || {
+          key,
+          n: raw.episode_number ?? null,
+          seq: raw.sequence_number ?? null,
+          season: raw.season_number ?? null,
+          inst: season.id,
+          instTitle: season.title,
+          air: raw.episode_air_date || null,
+          thumb: pickThumb(raw.images),
+          versions: {},
+        };
+        rec.air = rec.air || raw.episode_air_date || null;
+        rec.thumb = rec.thumb || pickThumb(raw.images);
+        rec.versions[locale] = { id: raw.id, date: releaseDate(raw), dur: raw.duration_ms || null, slug: raw.slug_title || "" };
+        byKey.set(key, rec);
       }
     });
-    const episodes = [...byKey.values()].sort((a, b) => (a.seq ?? a.n) - (b.seq ?? b.n));
+    const episodes = [...byKey.values()].sort(episodeSeqOrder);
     await store.set(cacheKey, { fetchedAt: Date.now(), episodes });
     return episodes;
   }
 
-  /** Fetch everything needed to rank: watchlist, episodes per season, playheads. */
+  const seqOf = (e) => (Number.isFinite(e.seq) ? e.seq : Number.isFinite(e.n) ? e.n : Infinity);
+  const episodeSeqOrder = (a, b) => (seqOf(a) - seqOf(b)) || String(a.key).localeCompare(String(b.key));
+
+  /** Fetch everything needed to rank: watchlist, episodes per instalment, playheads. */
   async function fetchData({ force = false, onStatus, onProgress } = {}) {
     onStatus("Reading your watchlist…");
     const wl = await fetchWatchlist();
@@ -211,19 +262,21 @@
         title: m.series_title || it.panel.title,
         slug: m.series_slug_title || it.panel.slug_title || "",
         panelThumb: pickThumb(it.panel.images),
-        upNext: m.episode_number ? { season: m.season_number, n: m.episode_number, id: it.panel.id } : null,
-        crFullyWatched: !!it.fully_watched,
-        isNew: !!it.new,
         episodes: [],
-        error: null,
+        error: null,      // whole show failed to load
+        failed: [],       // instalments that failed to load (partial data)
       };
     });
 
     onStatus(`Loading seasons and episodes for ${shows.length} shows…`);
-    let seasonJobs = [];
+    const seasonJobs = [];
     await mapLimit(shows, CONCURRENCY, async (show) => {
-      const seasons = canonicalSeasons(await fetchSeasons(show.seriesId));
-      seasons.forEach((s, order) => seasonJobs.push({ show, season: s, order }));
+      try {
+        const seasons = canonicalSeasons(await fetchSeasons(show.seriesId));
+        seasons.forEach((s, order) => seasonJobs.push({ show, season: s, order }));
+      } catch (e) {
+        show.error = `seasons: ${e.message}`;
+      }
     }, (d, n) => onProgress(d / n * 0.2));
 
     await mapLimit(seasonJobs, CONCURRENCY, async ({ show, season, order }) => {
@@ -231,7 +284,7 @@
         const eps = await loadSeason(season, force);
         show.episodes.push(...eps.map((e) => ({ ...e, catalogueOrder: order })));
       } catch (e) {
-        show.error = e.message;
+        show.failed.push(season.title || season.id);
       }
     }, (d, n) => onProgress(0.2 + d / n * 0.6));
     for (const show of shows) assignInstalmentOrder(show);
@@ -239,51 +292,56 @@
     onStatus("Checking what you have already watched…");
     const ids = [];
     for (const show of shows) for (const ep of show.episodes) for (const v of Object.values(ep.versions)) ids.push(v.id);
-    const playheadMap = await fetchPlayheads(ids);
-    const playheads = Object.fromEntries(playheadMap); // plain object so it survives storage
+    const playheads = await fetchPlayheads(ids);
     onProgress(1);
     return { shows, playheads, builtAt: Date.now(), showCount: shows.length };
   }
 
   /**
    * Instalment chronology. Crunchyroll's own season order is editorial: OVA and
-   * movie "seasons" are often appended after the main run (Slime lists both OVA
-   * collections after Season 4). We order instalments by the original air date of
-   * their first episode, then keep Crunchyroll's episode sequence inside each
-   * instalment. Air date, not Crunchyroll availability date, because catalogue
-   * back-fills (a 2019 movie added in 2026) would otherwise land in the wrong place.
+   * movie "seasons" are often appended after the main run. We order instalments
+   * by the original air date of their first episode, then keep Crunchyroll's
+   * episode sequence inside each. Air date rather than availability date, so a
+   * back-filled 2019 movie lands in 2019 and not on the day it was added.
    */
-  const epChrono = (e) => e.air || (e.versions["ja-JP"] && e.versions["ja-JP"].date) || (e.versions["en-US"] && e.versions["en-US"].date) || "";
+  function epChrono(e) {
+    const a = ts(e.air);
+    if (a !== null) return a;
+    for (const l of PREFERRED) { const d = e.versions[l] && ts(e.versions[l].date); if (d !== null && d !== undefined) return d; }
+    for (const v of Object.values(e.versions)) { const d = ts(v.date); if (d !== null) return d; }
+    return null;
+  }
   function assignInstalmentOrder(show) {
-    const start = new Map(); // instalment id -> earliest air date
-    const catalogue = new Map();
+    const start = new Map(), catalogue = new Map(), title = new Map();
     for (const e of show.episodes) {
       const d = epChrono(e);
-      if (d && (!start.has(e.inst) || d < start.get(e.inst))) start.set(e.inst, d);
+      if (d !== null && (!start.has(e.inst) || d < start.get(e.inst))) start.set(e.inst, d);
       catalogue.set(e.inst, e.catalogueOrder);
+      title.set(e.inst, e.instTitle);
     }
-    const ordered = [...catalogue.keys()].sort((a, b) =>
-      (start.get(a) || "9999").localeCompare(start.get(b) || "9999") || (catalogue.get(a) - catalogue.get(b)));
+    const ordered = [...catalogue.keys()].sort((a, b) => ((start.get(a) ?? Infinity) - (start.get(b) ?? Infinity)) || (catalogue.get(a) - catalogue.get(b)) || String(a).localeCompare(String(b)));
     const rankOf = new Map(ordered.map((id, i) => [id, i]));
     for (const e of show.episodes) e.sOrder = rankOf.get(e.inst);
-    show.instalments = ordered.map((id) => ({ id, title: show.episodes.find((e) => e.inst === id)?.instTitle, start: start.get(id) || null }));
+    show.instalments = ordered.map((id) => ({ id, title: title.get(id), start: start.get(id) ?? null }));
   }
-  const episodeOrder = (a, b) => (a.sOrder - b.sOrder) || ((a.seq ?? a.n) - (b.seq ?? b.n));
+  const episodeOrder = (a, b) => (a.sOrder - b.sOrder) || episodeSeqOrder(a, b);
+
+  // The version whose arrival date drives newness: first preferred locale present, else any.
+  function arrivalVersion(ep) {
+    for (const l of PREFERRED) if (ep.versions[l]) return { lang: l, v: ep.versions[l] };
+    const other = Object.keys(ep.versions).sort()[0];
+    return other ? { lang: other, v: ep.versions[other] } : null;
+  }
 
   /**
-   * Rank the fetched data. Pure: re-run it when a preference changes.
-   * Each show gets:
-   *   newestUnwatched: the unwatched episode with the latest "arrival" date,
-   *     where arrival = English release if an English version exists, else Japanese.
-   *   newestAny: the latest arrival regardless of watched state (for caught-up shows).
+   * Rank the fetched data. Pure: re-run when a preference changes.
    * With prefs.highWater on, every episode that precedes the last one you
    * actually watched (instalments in air-date order, episodes in sequence) is
-   * assumed watched too. This covers history that never made it into Crunchyroll
-   * (e.g. pre-merger Funimation) and old specials you skipped.
+   * assumed watched too, covering history that never reached Crunchyroll.
    */
   function rank(data, prefs) {
     const { shows, playheads } = data;
-    const fraction = (prefs.watchedPct ?? DEFAULT_WATCHED_PCT) / 100;
+    const fraction = prefs.watchedPct / 100;
     const now = Date.now();
     for (const show of shows) {
       const eps = [...show.episodes].sort(episodeOrder);
@@ -295,16 +353,15 @@
       }
       let newestUnwatched = null, newestAny = null, unwatchedCount = 0;
       eps.forEach((ep, i) => {
-        const en = ep.versions["en-US"], ja = ep.versions["ja-JP"];
-        const arrival = en || ja;
-        if (!arrival || !arrival.date || Date.parse(arrival.date) > now) return; // not released yet
-        const lang = en ? "en-US" : "ja-JP";
+        const a = arrivalVersion(ep);
+        const at = a ? ts(a.v.date) : null;
+        if (at === null || at > now) return; // not released yet / no usable date
         const started = Object.values(ep.versions).some((v) => (playheads[v.id]?.playhead || 0) > 0);
-        const cand = { ep, lang, date: arrival.date, id: arrival.id, watched: flags[i], started, dubbed: !!en };
-        if (!newestAny || cand.date > newestAny.date) newestAny = cand;
+        const cand = { ep, lang: a.lang, at, id: a.v.id, slug: a.v.slug, watched: flags[i], started };
+        if (!newestAny || cand.at > newestAny.at) newestAny = cand;
         if (!flags[i]) {
           unwatchedCount++;
-          if (!newestUnwatched || cand.date > newestUnwatched.date) newestUnwatched = cand;
+          if (!newestUnwatched || cand.at > newestUnwatched.at) newestUnwatched = cand;
         }
       });
       show.newestUnwatched = newestUnwatched;
@@ -312,31 +369,33 @@
       show.unwatchedCount = unwatchedCount;
       show.inferredWatched = inferred;
     }
-    const byDateDesc = (pick) => (a, b) => ((pick(b) && pick(b).date) || "").localeCompare((pick(a) && pick(a).date) || "");
+    const byAtDesc = (pick) => (a, b) => ((pick(b)?.at ?? -Infinity) - (pick(a)?.at ?? -Infinity)) || a.title.localeCompare(b.title);
+    const problems = shows.filter((s) => s.error || (s.failed.length && !s.newestUnwatched));
+    const rest = shows.filter((s) => !problems.includes(s));
     return {
-      active: shows.filter((s) => s.newestUnwatched).sort(byDateDesc((s) => s.newestUnwatched)),
-      caughtUp: shows.filter((s) => !s.newestUnwatched).sort(byDateDesc((s) => s.newestAny)),
+      active: rest.filter((s) => s.newestUnwatched).sort(byAtDesc((s) => s.newestUnwatched)),
+      caughtUp: rest.filter((s) => !s.newestUnwatched).sort(byAtDesc((s) => s.newestAny)),
+      problems: problems.sort((a, b) => a.title.localeCompare(b.title)),
     };
   }
 
   // -------------------------------------------------------------------- ui
-  const $ = (sel, root = document) => root.querySelector(sel);
   const el = (tag, attrs = {}, children = []) => {
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
+      if (v === null || v === undefined || v === false) continue;
       if (k === "class") n.className = v;
       else if (k === "text") n.textContent = v;
+      else if (k === "checked") n.checked = !!v;
       else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
-      else n.setAttribute(k, v);
+      else n.setAttribute(k, v === true ? "" : v);
     }
-    for (const c of children) if (c) n.append(c);
+    for (const c of children) if (c) n.append(typeof c === "string" ? document.createTextNode(c) : c);
     return n;
   };
 
-  function relTime(iso) {
-    const d = Date.parse(iso);
-    if (!d) return "";
-    const days = Math.floor((Date.now() - d) / 86_400_000);
+  function relTime(at) {
+    const days = Math.floor((Date.now() - at) / 86_400_000);
     if (days <= 0) return "today";
     if (days === 1) return "yesterday";
     if (days < 14) return `${days} days ago`;
@@ -344,78 +403,92 @@
     if (days < 730) return `${Math.floor(days / 30)} months ago`;
     return `${Math.floor(days / 365)} years ago`;
   }
-  const fmtDate = (iso) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-  const langLabel = (l) => (l === "en-US" ? "EN" : l === "ja-JP" ? "JA" : l);
+  const fmtDate = (at) => new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  const langLabel = (l) => (l === "en-US" ? "EN" : l === "ja-JP" ? "JA" : (l || "").split("-")[0].toUpperCase());
+  const LANG_NAMES = { "en-US": "English audio", "ja-JP": "Japanese audio", "de-DE": "German audio", "fr-FR": "French audio", "es-419": "Spanish (Latin America) audio", "es-ES": "Spanish audio", "pt-BR": "Portuguese (Brazil) audio", "it-IT": "Italian audio", "ru-RU": "Russian audio", "hi-IN": "Hindi audio", "ko-KR": "Korean audio", "zh-CN": "Chinese audio", "ar-SA": "Arabic audio" };
 
   // "Season 2" -> "S2 E9". Other instalments (movie, OVA collection) keep their
-  // title, minus the series name and audio suffixes Crunchyroll sometimes prepends.
+  // title, minus the series name and audio suffixes Crunchyroll sometimes adds.
   function instalmentLabel(show, ep) {
     let t = ep.instTitle || "";
     if (show.title && t.toLowerCase().startsWith(show.title.toLowerCase())) t = t.slice(show.title.length);
-    t = t.replace(/\((English|Japanese|[A-Za-z]+) Dub\)/i, "").replace(/^[\s:\-–]+|[\s:\-–]+$/g, "").trim();
-    const m = /^Season\s*(\d+)/i.exec(t);
-    if (m) return `S${m[1]} E${ep.n}`;
+    t = t.replace(/\(([A-Za-z]+) Dub\)/i, "").replace(/^[\s:\-–]+|[\s:\-–]+$/g, "").trim();
+    const epPart = Number.isFinite(ep.n) ? ` E${ep.n}` : "";
+    const m = /^Season\s*(\d+)\b/i.exec(t);
+    if (m) return `S${m[1]}${epPart}`;
     const roman = { II: 2, III: 3, IV: 4, V: 5, VI: 6 }[t.toUpperCase()];
-    if (roman) return `S${roman} E${ep.n}`;
-    if (!t) return `S${ep.season ?? "?"} E${ep.n}`;
+    if (roman) return `S${roman}${epPart}`;
+    if (!t) return `S${Number.isFinite(ep.season) ? ep.season : "?"}${epPart}`;
     const short = t.length > 30 ? t.slice(0, 28) + "…" : t;
     const single = show.episodes.filter((e) => e.inst === ep.inst).length === 1;
-    return single ? short : `${short} E${ep.n}`;
+    return single ? short : `${short}${epPart}`;
   }
 
   function card(show, { done }) {
     const c = show.newestUnwatched || show.newestAny;
-    const href = c ? `/watch/${c.id}/${c.ep.slug || ""}` : `/series/${show.seriesId}/${show.slug}`;
+    const href = c ? `/watch/${c.id}/${c.slug || ""}` : `/series/${show.seriesId}/${show.slug}`;
     const thumb = (c && c.ep.thumb) || show.panelThumb;
     const lines = [];
     if (c) {
-      const epLabel = instalmentLabel(show, c.ep);
       lines.push(el("div", { class: "bwl-line" }, [
-        el("strong", { text: done ? "Latest: " : (c.started ? "Continue: " : "Next new: ") }),
-        document.createTextNode(`${epLabel} · ${langLabel(c.lang)} · `),
-        el("span", { class: "bwl-date", text: relTime(c.date) }),
-        el("span", { class: "bwl-muted", text: `  (${fmtDate(c.date)})` }),
+        el("strong", { text: done ? "Latest: " : c.started ? "Continue: " : "Next new: " }),
+        `${instalmentLabel(show, c.ep)} · ${langLabel(c.lang)} · `,
+        el("span", { class: "bwl-date", text: relTime(c.at) }),
+        el("span", { class: "bwl-muted", text: `  (${fmtDate(c.at)})` }),
       ]));
-      if (!done && c.lang === "ja-JP") lines.push(el("div", { class: "bwl-muted", text: "No English dub of this episode yet" }));
+      if (!done && c.lang === "ja-JP" && PREFERRED[0] === "en-US") lines.push(el("div", { class: "bwl-muted", text: "No English dub of this episode yet" }));
       if (!done) lines.push(el("div", { class: "bwl-muted", text: `${show.unwatchedCount} unwatched episode${show.unwatchedCount === 1 ? "" : "s"}` + (show.inferredWatched ? ` · ${show.inferredWatched} earlier assumed watched` : "") }));
       if (done) lines.push(el("div", { class: "bwl-muted", text: "All caught up" }));
     } else {
       lines.push(el("div", { class: "bwl-muted", text: show.error ? `Could not load: ${show.error}` : "No released episodes found" }));
     }
+    if (show.failed.length) lines.push(el("div", { class: "bwl-warn", text: `Could not load: ${show.failed.join(", ")}. Ranking may be stale.` }));
+    // Flag badge: drawn in CSS (SVG) for EN/JA because Chrome on Windows cannot
+    // render flag emoji; other languages fall back to a text badge.
+    const flagClass = c ? ({ "en-US": "bwl-flag bwl-lang-en", "ja-JP": "bwl-flag bwl-lang-ja" }[c.lang] || "bwl-lang-other") : "";
+    const hasFlag = flagClass.includes("bwl-flag");
     return el("a", { class: "bwl-card" + (done ? " bwl-done" : ""), href }, [
       el("div", { class: "bwl-thumb" }, [
         thumb ? el("img", { src: thumb, loading: "lazy", alt: "" }) : null,
-        c ? el("span", { class: `bwl-badge bwl-lang-${c.lang === "en-US" ? "en" : "ja"}`, text: langLabel(c.lang) }) : null,
-        !done && c && (Date.now() - Date.parse(c.date)) < 7 * 86_400_000 ? el("span", { class: "bwl-badge bwl-new", text: "NEW" }) : null,
+        c ? el("span", { class: `bwl-badge ${flagClass}`, title: LANG_NAMES[c.lang] || c.lang, "aria-label": LANG_NAMES[c.lang] || c.lang, text: hasFlag ? "" : langLabel(c.lang) }) : null,
+        !done && c && Date.now() - c.at < 7 * 86_400_000 ? el("span", { class: "bwl-badge bwl-new", text: "NEW" }) : null,
       ]),
       el("div", { class: "bwl-body" }, [el("div", { class: "bwl-title", text: show.title }), ...lines]),
     ]);
   }
 
-  let root, statusEl, progressEl, gridsEl, data = null, view = null;
-  const DEFAULT_PREFS = { hideDone: false, highWater: true, watchedPct: DEFAULT_WATCHED_PCT };
-  let prefs = { ...DEFAULT_PREFS };
+  // ------------------------------------------------------------ ui: state
+  let root, statusEl, progressEl, gridsEl, toggleBtn, modal;
+  let data = null, view = null, prefs = { ...DEFAULT_PREFS };
+  let prevHtmlOverflow = "";
 
   function render() {
+    if (!gridsEl) return;
     gridsEl.replaceChildren();
     if (!data) return;
     view = rank(data, prefs);
-    const { active, caughtUp } = view;
+    const { active, caughtUp, problems } = view;
     gridsEl.append(el("div", { class: "bwl-section-title", text: `New for you (${active.length})` }));
     gridsEl.append(el("div", { class: "bwl-grid" }, active.map((s) => card(s, { done: false }))));
     if (!active.length) gridsEl.append(el("div", { class: "bwl-empty", text: "Nothing unwatched. Enjoy the break." }));
+    if (problems.length) {
+      gridsEl.append(el("div", { class: "bwl-section-title bwl-section-warn", text: `Could not load (${problems.length}) — try Refresh` }));
+      gridsEl.append(el("div", { class: "bwl-grid" }, problems.map((s) => card(s, { done: false }))));
+    }
     if (!prefs.hideDone) {
       gridsEl.append(el("div", { class: "bwl-section-title", text: `Caught up (${caughtUp.length})` }));
       gridsEl.append(el("div", { class: "bwl-grid" }, caughtUp.map((s) => card(s, { done: true }))));
+    } else if (caughtUp.length) {
+      gridsEl.append(el("div", { class: "bwl-footnote", text: `${caughtUp.length} caught-up show${caughtUp.length === 1 ? "" : "s"} hidden · change in Settings` }));
     }
   }
 
   function setStatus(msg, isError = false) {
+    if (!statusEl) return;
     statusEl.textContent = msg;
     statusEl.classList.toggle("bwl-error", isError);
   }
-  const setProgress = (f) => { progressEl.style.width = `${Math.round(f * 100)}%`; };
-  const savePrefs = () => store.set("prefs", prefs);
+  const setProgress = (f) => { if (progressEl) progressEl.style.width = `${Math.round(f * 100)}%`; };
 
   let loading = false;
   async function load(force) {
@@ -424,99 +497,141 @@
     setProgress(0);
     try {
       data = await fetchData({ force, onStatus: setStatus, onProgress: setProgress });
-      await store.set("data", data);
       render();
       setStatus(`${data.showCount} shows · updated ${new Date(data.builtAt).toLocaleTimeString()}`);
     } catch (e) {
-      console.error("[Better Watchlist]", e);
+      console.error(`[${APP_NAME}]`, e);
       setStatus(`Failed: ${e.message}`, true);
     } finally {
       loading = false;
       setProgress(0);
     }
+    // Persisting is best-effort: a quota failure must not undo a successful run.
+    if (data) { try { await store.set(DATA_KEY, data); } catch (e) { console.warn(`[${APP_NAME}] could not cache results:`, e); } }
   }
 
+  // --------------------------------------------------------- ui: settings
+  function openSettings() {
+    if (modal) modal.remove();
+    const draft = { ...prefs };
+    const pctLabel = el("span", { class: "bwl-pct", text: `${draft.watchedPct}%` });
+    const pct = el("input", { type: "range", min: "50", max: "100", step: "5", value: String(draft.watchedPct), class: "bwl-slider",
+      oninput: (ev) => { draft.watchedPct = Number(ev.target.value); pctLabel.textContent = `${draft.watchedPct}%`; } });
+    const highWater = el("input", { type: "checkbox", checked: draft.highWater, onchange: (ev) => { draft.highWater = ev.target.checked; } });
+    const hideDone = el("input", { type: "checkbox", checked: draft.hideDone, onchange: (ev) => { draft.hideDone = ev.target.checked; } });
+    const close = () => { if (modal) modal.remove(); modal = null; document.removeEventListener("keydown", onKey); };
+    const onKey = (ev) => { if (ev.key === "Escape") close(); };
+    const save = () => { prefs = sanitizePrefs(draft); savePrefs(prefs); render(); close(); };
+    const setting = (title, help, control) => el("label", { class: "bwl-setting" }, [
+      el("div", { class: "bwl-setting-text" }, [el("strong", { text: title }), el("div", { class: "bwl-muted", text: help })]),
+      el("div", { class: "bwl-setting-control" }, control),
+    ]);
+    modal = el("div", { class: "bwl-modal-backdrop", onclick: (ev) => { if (ev.target === modal) close(); } }, [
+      el("div", { class: "bwl-modal", role: "dialog", "aria-label": "Settings" }, [
+        el("h2", { text: "Settings" }),
+        setting("Count an episode as watched at", "Crunchyroll only sets its own flag if you sit through the credits. Anything past this share of the runtime, or within 5 minutes of the end, counts as watched.", [pct, pctLabel]),
+        setting("Assume earlier episodes watched", "Everything before the last episode you actually watched in a series is treated as watched. Fills gaps Crunchyroll never recorded.", [highWater]),
+        setting("Hide caught-up shows", "Hide shows with nothing left to watch.", [hideDone]),
+        el("div", { class: "bwl-modal-actions" }, [
+          el("button", { text: "Cancel", onclick: close }),
+          el("button", { class: "bwl-primary", text: "Save", onclick: save }),
+        ]),
+      ]),
+    ]);
+    root.append(modal);
+    document.addEventListener("keydown", onKey);
+  }
+
+  // ------------------------------------------------------------ ui: shell
   function buildUi() {
     if (root) return;
-    root = el("div", { id: "bwl-root", hidden: "" });
+    root = el("div", { id: "bwl-root", hidden: true });
     statusEl = el("div", { class: "bwl-status" });
     progressEl = el("div");
     gridsEl = el("div");
-
-    const hideDone = el("input", { type: "checkbox", onchange: (ev) => { prefs.hideDone = ev.target.checked; savePrefs(); render(); } });
-    const highWater = el("input", { type: "checkbox", onchange: (ev) => { prefs.highWater = ev.target.checked; savePrefs(); render(); } });
-    const pctLabel = el("span", { class: "bwl-pct" });
-    const pct = el("input", {
-      type: "range", min: "50", max: "100", step: "5", class: "bwl-slider",
-      oninput: (ev) => { prefs.watchedPct = Number(ev.target.value); pctLabel.textContent = `${prefs.watchedPct}%`; render(); },
-      onchange: savePrefs,
-    });
-    const syncControls = () => {
-      hideDone.checked = !!prefs.hideDone;
-      highWater.checked = !!prefs.highWater;
-      pct.value = String(prefs.watchedPct);
-      pctLabel.textContent = `${prefs.watchedPct}%`;
-    };
-    syncControls();
-
     root.append(
       el("div", { class: "bwl-bar" }, [
-        el("h1", { text: "Better Watchlist" }),
-        el("span", { class: "bwl-muted", text: "newest unwatched episode first · EN preferred, JA fallback" }),
+        el("div", { class: "bwl-heading" }, [el("h1", { text: APP_NAME }), el("div", { class: "bwl-tagline", text: TAGLINE })]),
         el("span", { class: "bwl-spacer" }),
-        el("label", { title: "An episode counts as watched once the playhead passes this share of its runtime (Crunchyroll's own flag needs you to sit through the credits)" }, [
-          document.createTextNode("Watched at "), pct, pctLabel,
-        ]),
-        el("label", { title: "Assume everything before the last episode you watched in a series is watched too" }, [highWater, document.createTextNode("Assume earlier episodes watched")]),
-        el("label", {}, [hideDone, document.createTextNode("Hide caught-up")]),
+        el("button", { text: "Settings", onclick: openSettings }),
         el("button", { text: "Refresh", title: "Re-check playheads and new episodes (uses cached episode lists)", onclick: () => load(false) }),
         el("button", { text: "Full reload", title: "Ignore cache and refetch everything", onclick: () => load(true) }),
-        el("button", { class: "bwl-primary", text: "Close", onclick: hide }),
+        el("button", { class: "bwl-primary", text: "Normal Watchlist", title: "Back to Crunchyroll's own watchlist", onclick: () => hide(true) }),
       ]),
       el("div", { class: "bwl-progress" }, [progressEl]),
       statusEl,
       gridsEl,
     );
     document.documentElement.append(root);
-    store.get("prefs").then((p) => { if (p) { prefs = { ...DEFAULT_PREFS, ...p }; syncControls(); render(); } });
   }
 
+  let showing = false;
   async function show() {
     buildUi();
+    prefs = loadPrefs(); // also (re)writes the cookie: defaults on first run, refreshed clock otherwise
+    writeCookie(ACTIVE_COOKIE, "1");
+    if (showing) return;
+    showing = true;
     root.hidden = false;
+    if (toggleBtn) toggleBtn.hidden = true;
+    prevHtmlOverflow = document.documentElement.style.overflow;
     document.documentElement.style.overflow = "hidden";
     if (!data) {
-      const cached = await store.get("data");
-      if (cached) { data = cached; render(); setStatus(`Showing cached view from ${new Date(cached.builtAt).toLocaleString()} · refreshing…`); }
+      const cached = await store.get(DATA_KEY);
+      if (cached && Array.isArray(cached.shows) && cached.playheads) {
+        data = cached;
+        render();
+        setStatus(`Showing cached view from ${new Date(cached.builtAt).toLocaleString()} · refreshing…`);
+      }
     }
     load(false);
   }
-  function hide() {
-    if (!root) return;
+
+  // userInitiated: the user chose "Normal Watchlist", so stop auto-reopening.
+  function hide(userInitiated) {
+    if (userInitiated) deleteCookie(ACTIVE_COOKIE);
+    if (!showing) return;
+    showing = false;
     root.hidden = true;
-    document.documentElement.style.overflow = "";
-    if (location.hash === "#better-watchlist") history.replaceState(null, "", location.pathname + location.search);
+    if (modal) { modal.remove(); modal = null; }
+    document.documentElement.style.overflow = prevHtmlOverflow;
+    if (toggleBtn && onListPage()) toggleBtn.hidden = false;
+    if (location.hash === OPEN_HASH) history.replaceState(null, "", location.pathname + location.search);
   }
 
   function mountToggle() {
-    if ($("#bwl-toggle")) return;
-    document.documentElement.append(el("button", { id: "bwl-toggle", text: "Better Watchlist", onclick: show }));
+    if (toggleBtn && toggleBtn.isConnected) return;
+    toggleBtn = el("button", { id: "bwl-toggle", text: APP_NAME, onclick: () => show() });
+    document.documentElement.append(toggleBtn);
   }
 
-  // Only offer the button on the My Lists pages; open automatically when asked via hash.
+  // ------------------------------------------------------- page lifecycle
+  // Offer the button on the My Lists pages. Auto-open there if the overlay was
+  // active when the user left (e.g. to watch an episode) or if asked via hash.
   const onListPage = () => /^\/(watchlist|crunchylists|history)\b/.test(location.pathname);
   function init() {
-    if (onListPage()) mountToggle();
-    if (location.hash === "#better-watchlist") show();
+    if (onListPage()) {
+      mountToggle();
+      if (location.hash === OPEN_HASH || readCookie(ACTIVE_COOKIE) === "1") show();
+      else toggleBtn.hidden = showing;
+    } else {
+      if (toggleBtn) toggleBtn.hidden = true;
+      if (showing) hide(false); // left the list page inside the SPA; keep the active flag so we come back
+    }
   }
   init();
   window.addEventListener("hashchange", init);
-  // Crunchyroll is a SPA: watch for client-side navigation.
   let lastPath = location.pathname;
-  setInterval(() => {
-    if (location.pathname !== lastPath) { lastPath = location.pathname; init(); }
-  }, 800);
+  setInterval(() => { if (location.pathname !== lastPath) { lastPath = location.pathname; init(); } }, 1000);
 
-  // Expose for console testing.
-  window.__betterWatchlist = { show, hide, load, rank, get data() { return data; }, get view() { return view; }, get prefs() { return prefs; }, set prefs(p) { prefs = { ...prefs, ...p }; } };
+  // Toolbar button (background.js) asks an already-open watchlist tab to show the overlay.
+  if (isExtension && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+      if (msg && msg.type === "open") { const ok = onListPage(); if (ok) show(); reply({ ok }); }
+    });
+  }
+
+  // Exposed for the paste-into-console test harness only. As an installed
+  // extension this lives in the isolated world and is NOT visible to the page.
+  window.__crWatchlistPlus = { show, hide, load, rank, get data() { return data; }, get view() { return view; }, get prefs() { return prefs; } };
 })();

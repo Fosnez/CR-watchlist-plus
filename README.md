@@ -4,11 +4,13 @@ A small Chrome extension that gives your Crunchyroll watchlist the one sort orde
 
 > **The show with the newest episode you haven't watched yet comes first.**
 
-English release dates are used when an English dub of that episode exists, Japanese otherwise. Episodes you already finished in either language stay finished, so a dub arriving months after you watched the sub does not drag a show back to the top. Shows with nothing left to watch drop into a greyed "Caught up" section.
+English release dates are used when an English dub of that episode exists, Japanese otherwise. Episodes you already finished in either language stay finished, so a dub arriving months after you watched the sub does not drag a show back to the top. Shows with nothing left to watch are hidden by default, or shown greyed in a "Caught up" section if you prefer.
 
 ![The overlay on a real watchlist](docs/screenshot.png)
 
 Everything runs inside your browser, in your existing Crunchyroll login. No server, no account details stored, no analytics. The only network traffic is to crunchyroll.com, using the same internal endpoints the site's own watchlist page calls.
+
+> Not on the Chrome Web Store. Install it unpacked from this repository (below). Not affiliated with or endorsed by Crunchyroll; it uses undocumented endpoints and may stop working when they change.
 
 ---
 
@@ -20,9 +22,10 @@ Crunchyroll's "Recent Activity" sort bumps a show whenever *anything* about it c
 
 - Reads your watchlist, every season (and movie, and OVA collection) of every show, and every episode in both Japanese and English audio.
 - Reads your playheads for **both** language versions of each episode, so an episode watched in Japanese counts as watched when the English dub arrives.
-- Treats an episode as watched once you are past an adjustable share of its runtime (default 75%), because Crunchyroll only sets its own completed flag if you sit through the ending theme. Skipping the credits otherwise leaves finished episodes at 83 to 89% and they resurface as unwatched.
-- Optionally assumes everything *before* the last episode you watched in a series is watched too (see below). This fills gaps such as pre-merger Funimation history that never reached Crunchyroll.
+- Treats an episode as watched once you are past an adjustable share of its runtime (default 75%), because Crunchyroll only sets its own completed flag if you sit through the ending theme. Skipping the credits otherwise leaves finished episodes at 80 to 90% and they resurface as unwatched.
+- Optionally assumes everything *before* the last episode you watched in a series is watched too (on by default, see below). This fills gaps such as pre-merger Funimation history that never reached Crunchyroll.
 - Ranks shows by the newest unwatched episode's arrival date and renders its own grid over the watchlist page. Each card links to that exact episode in the language shown.
+- Remembers that you had the overlay open. Click an episode, watch it, come back to the watchlist by any route, and the overlay is there again with your progress refreshed.
 - Caches episode lists for 12 hours, so the first open takes 10 to 30 seconds and later opens a couple of seconds.
 
 ## Install (unpacked, Chrome or any Chromium browser)
@@ -31,70 +34,88 @@ Crunchyroll's "Recent Activity" sort bumps a show whenever *anything* about it c
 2. Open `chrome://extensions` in the address bar.
 3. Turn on **Developer mode** (toggle, top right).
 4. Click **Load unpacked** and choose the unzipped folder (the one containing `manifest.json`).
-5. Go to <https://www.crunchyroll.com/watchlist>, logged in. An orange **Better Watchlist** button appears bottom-right. Click it.
+5. Go to <https://www.crunchyroll.com/watchlist>, logged in. An orange **CR Watchlist Plus** button appears bottom-right. Click it.
 
-You can also click the extension's toolbar icon, which opens the watchlist with the overlay already showing. Pin it via the puzzle-piece menu if you want it visible.
+The toolbar icon (orange play button; pin it via the puzzle-piece menu) also opens the overlay, focusing an existing watchlist tab if you have one.
 
 ### Updating
 
-Pull or re-download the folder, then on `chrome://extensions` click the reload arrow on the extension card. Cached data survives; if a change alters the cache format the first open simply refetches.
+Pull or re-download the folder, then on `chrome://extensions` click the reload arrow on the extension card. Cached data is versioned; if a release changes the cache format the first open refetches and everything else carries over. Your settings live in a cookie and are unaffected.
 
 ### Uninstall
 
-Remove it from `chrome://extensions`. Nothing is left behind on Crunchyroll's side; the extension never writes to your account.
+Remove it from `chrome://extensions`. Nothing is left behind on Crunchyroll's side; the extension never writes to your account. Two cookies on crunchyroll.com remain until they expire or you clear site data (see Privacy).
 
-## Controls
+## The overlay
 
 | Control | What it does |
 |---|---|
-| **Watched at N%** slider | Threshold past which an episode counts as watched (50 to 100, default 75). Also counts an episode watched if within 5 minutes of the end, or if Crunchyroll's own flag is set. |
-| **Assume earlier episodes watched** | The high-water rule, on by default. Everything before the last episode you actually watched in a series is treated as watched. Cards show how many episodes were inferred. |
-| **Hide caught-up** | Hides the greyed section of shows with nothing left. |
+| **Settings** | Opens the settings dialog (below). Changes apply on **Save** and re-rank instantly from cached data. |
 | **Refresh** | Re-reads your watchlist and playheads, reusing cached episode lists. Use after watching something. |
 | **Full reload** | Drops the cache and refetches everything. Use if a new episode has not shown up within 12 hours. |
+| **Normal Watchlist** | Closes the overlay and returns you to Crunchyroll's own page. Also stops the overlay reopening automatically until you click the button again. |
 
-Settings re-rank instantly from cached data. Changing the slider or toggle never triggers a refetch.
+### Settings
+
+| Setting | Default | What it does |
+|---|---|---|
+| **Count an episode as watched at** | 75% | Threshold past which an episode counts as watched (50 to 100%). An episode also counts if within 5 minutes of the end, or if Crunchyroll's own completed flag is set. |
+| **Assume earlier episodes watched** | on | The high-water rule. Everything before the last episode you actually watched in a series is treated as watched. Cards show how many episodes were inferred. |
+| **Hide caught-up shows** | on | Hides shows with nothing left to watch. When on, a footnote says how many are hidden. |
+
+Settings are stored in a cookie on crunchyroll.com, not in the extension, so they survive reinstalling the extension. Chrome caps cookie lifetime at 400 days; the cookie is rewritten every time the overlay opens, so in practice it never expires while you use it. Defaults are written on first open.
+
+### Reading a card
+
+- **Flag badge** (top left of the thumbnail): the audio language the card's episode is in. Union Jack for English, Hinomaru for Japanese, a text code for anything else.
+- **NEW** badge: that episode arrived in the last 7 days.
+- **Next new:** the newest episode you have not started. **Continue:** you have started it. **Latest:** shown on caught-up shows for the most recent episode.
+- **S2 E9**, **Operation Desert Pasta**, **OVA Season 1 E3**: Crunchyroll's instalment title, not its internal season counter (which numbers movies and OVAs as seasons), then the episode number.
+- **No English dub of this episode yet**: the newest unwatched episode exists only in Japanese so far.
+- **N unwatched episodes · M earlier assumed watched**: the count still to watch, and how many the high-water rule filled in.
+- **Could not load** (orange): part or all of that show failed to fetch. Such shows are listed in their own section, never as caught up, so a network hiccup cannot hide a new episode. Try **Refresh**.
 
 ## How the ranking works
 
 For each show:
 
 1. Instalments (seasons, movies, OVA collections) are put in **chronological order by the original air date of their first episode**, with Crunchyroll's episode sequence kept inside each. Crunchyroll's own season order is editorial and often lists OVAs and movies after the main run.
-2. For each episode, collect the Japanese and English versions with their ids and release dates. *Arrival date* is the English release if an English version exists, else the Japanese release.
-3. An episode is **watched** if either version is fully watched, or either version's playhead is past the slider threshold or within five minutes of the end.
+2. For each episode, collect the Japanese and English versions with their ids and release dates. *Arrival date* is the English release if an English version exists, else the Japanese release, else whatever original language the show has.
+3. An episode is **watched** if either version is fully watched, or either version's playhead is past the threshold or within five minutes of the end (for episodes longer than five minutes).
 4. With the high-water rule on, every episode that precedes the last watched one (in the order from step 1) is also treated as watched.
-5. The show's sort key is the latest arrival date among its unwatched, already-released episodes. Shows with none are ranked by their latest arrival overall and shown under "Caught up".
+5. The show's sort key is the latest arrival date among its unwatched, already-released episodes. Shows with none are ranked by their latest arrival overall and shown under "Caught up" if that section is enabled.
 
-Card labels use Crunchyroll's instalment title ("S2 E9", "Operation Desert Pasta", "OVA Season 1 E3") rather than its internal season counter, which numbers movies and OVAs as seasons.
-
-To prefer Japanese over English, change `PREFERRED` at the top of `content.js`.
+To prefer Japanese over English, change `PREFERRED` at the top of `content.js`. The episode cache is keyed by that setting, so the change takes effect on the next open.
 
 ## Known issues and edge cases
 
 - **OVA collections spanning years.** An OVA "season" is placed by the air date of its *first* episode, but Crunchyroll often groups OVAs released over several years into one collection. A late OVA can therefore sit before a TV season that aired after it, and the high-water rule will infer it watched once you finish that season. Slime's "OVA Season 1" (2019 to 2020) is the live example. Per-episode ordering would fix this but breaks recap and special episodes that air out of sequence; the trade-off is left as is. Turn the high-water rule off if it bites.
 - **The high-water rule is an inference.** It cannot tell "watched elsewhere or skipped on purpose" from "abandoned halfway". A movie you stopped at 51% before finishing the next season will be treated as watched. Cards show the inferred count so you can see when it has acted.
-- **Messy instalment names.** Labels strip the series name and "(English Dub)" and recognise "Season 2", "Season2" and Roman numerals, but instalments whose title is only a year or a subtitle show that fragment, for example "2199 E1".
+- **Episodes with no duration** in Crunchyroll's data only count as watched via Crunchyroll's own completed flag, never via the percentage rule.
+- **Messy instalment names.** Labels strip the series name and "(English Dub)" and recognise "Season 2", "Season2" and Roman numerals, but instalments whose title is only a year or a subtitle show that fragment, for example "3199 E19".
 - **Legacy dub seasons.** Very old catalogue entries where the dub is a separate season with no version links are treated as separate instalments, so watched-in-Japanese suppression does not apply to them.
-- **Unofficial API.** Crunchyroll can change endpoints or the web client id without notice. If the overlay shows "Token exchange failed", compare the `WEB_CLIENT_BASIC` constant in `content.js` with the Authorization header the site sends to `/auth/v1/token` (DevTools → Network).
+- **Flags are drawn, not emoji.** Chrome on Windows cannot render flag emoji, so the two flags are inline SVGs and other languages fall back to a two-letter code.
+- **Unofficial API.** Crunchyroll can change endpoints or the web client id without notice. If the overlay shows "Token exchange failed", compare the `WEB_CLIENT_BASIC` constant in `content.js` with the Authorization header the site sends to `/auth/v1/token` (DevTools → Network). The id is Crunchyroll's public web-app client id with an empty secret; it is not a credential.
 - **Chrome only.** Manifest V3 with a service worker. Firefox would need a `browser_specific_settings` block and a background script.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `manifest.json` | Extension manifest (MV3). Content script on crunchyroll.com, storage permission, toolbar action. |
+| `manifest.json` | Extension manifest (MV3). Content script on crunchyroll.com, storage permissions, toolbar action, icons. |
 | `content.js` | Everything: token exchange, API calls, caching, ranking, UI. |
-| `content.css` | Overlay styling. |
-| `background.js` | Toolbar click → open or focus the watchlist with the overlay. |
+| `content.css` | Overlay styling, including the SVG flag badges. |
+| `background.js` | Toolbar click → focus an open watchlist tab and show the overlay, or open one. |
+| `icons/` | Toolbar and extension icons. |
 | `docs/screenshot.png` | The image above. |
 
 ## Privacy
 
-The extension reads your watchlist, episode metadata and playheads from crunchyroll.com and stores derived data in the extension's local storage on your machine. It sends nothing anywhere else and never modifies your Crunchyroll account.
+The extension reads your watchlist, episode metadata and playheads from crunchyroll.com and stores derived data in the extension's local storage on your machine. It sets two cookies on crunchyroll.com: `cr_watchlist_plus_prefs` (your three settings) and `cr_watchlist_plus_active` (whether to reopen the overlay when you return to the watchlist). It generates a random device id per install for Crunchyroll's token exchange, stored locally; this is not linked to you and exists only so every install does not present the same device. It sends nothing anywhere else and never modifies your Crunchyroll account.
 
 ## How it was built
 
-This extension was written with an AI coding assistant (Claude, by Anthropic) working in Claude Code, directed and tested by the repository owner. The AI reverse-engineered the endpoints from the live site's network traffic, wrote the code, and verified behaviour against a real watchlist; design decisions such as the 75% watched threshold, the high-water rule and the instalment ordering came out of that back-and-forth. Treat the code accordingly: read it before you trust it.
+This extension was written with an AI coding assistant (Claude, by Anthropic) working in Claude Code, directed and tested by the repository owner. The AI reverse-engineered the endpoints from the live site's network traffic, wrote the code, and verified behaviour against a real watchlist; design decisions such as the 75% watched threshold, the high-water rule and the instalment ordering came out of that back-and-forth. A second AI model then reviewed the code, documentation and git history before release. Treat the code accordingly: read it before you trust it.
 
 ## Licence
 

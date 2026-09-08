@@ -13,6 +13,7 @@
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
 }
 #bwl-toggle:hover { background: #ff8d3d; }
+#bwl-toggle[hidden] { display: none; }
 
 #bwl-root {
   position: fixed;
@@ -31,43 +32,38 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px 18px;
+  gap: 12px 12px;
   padding: 14px 24px;
   background: #141519;
   border-bottom: 1px solid #23252b;
   z-index: 1;
 }
+.bwl-heading { display: flex; flex-direction: column; gap: 3px; }
 .bwl-bar h1 {
   margin: 0;
   font-size: 20px;
   font-weight: 700;
   color: #fff;
+  line-height: 1.1;
 }
+.bwl-tagline { color: #8a8a8a; font-size: 12px; }
 .bwl-bar .bwl-spacer { flex: 1; }
-.bwl-bar label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  color: #bdbdbd;
-}
-.bwl-bar select {
-  background: #23252b;
-  color: #fff;
-  border: 1px solid #3a3d45;
-  border-radius: 4px;
-  padding: 6px 8px;
-}
-.bwl-bar button {
+.bwl-bar button,
+.bwl-modal button {
   background: #23252b;
   color: #fff;
   border: 1px solid #3a3d45;
   border-radius: 4px;
   padding: 7px 12px;
   cursor: pointer;
+  font: inherit;
 }
-.bwl-bar button:hover { background: #2e3138; }
-.bwl-bar button.bwl-primary { background: #f47521; border-color: #f47521; color: #000; font-weight: 700; }
+.bwl-bar button:hover,
+.bwl-modal button:hover { background: #2e3138; }
+.bwl-bar button.bwl-primary,
+.bwl-modal button.bwl-primary { background: #f47521; border-color: #f47521; color: #000; font-weight: 700; }
+.bwl-bar button.bwl-primary:hover,
+.bwl-modal button.bwl-primary:hover { background: #ff8d3d; }
 
 .bwl-status {
   padding: 8px 24px;
@@ -77,15 +73,8 @@
 }
 .bwl-status.bwl-error { color: #ff6b6b; }
 
-.bwl-progress {
-  height: 3px;
-  background: #23252b;
-}
-.bwl-progress > div {
-  height: 100%;
-  background: #f47521;
-  transition: width 0.2s;
-}
+.bwl-progress { height: 3px; background: #23252b; }
+.bwl-progress > div { height: 100%; background: #f47521; transition: width 0.2s; }
 
 .bwl-section-title {
   margin: 24px 24px 8px;
@@ -94,6 +83,8 @@
   text-transform: uppercase;
   color: #8a8a8a;
 }
+.bwl-section-warn { color: #ffb347; }
+.bwl-footnote { margin: 8px 24px 32px; color: #6f6f6f; font-size: 12px; }
 
 .bwl-grid {
   display: grid;
@@ -112,24 +103,12 @@
   color: inherit;
   transition: transform 0.12s, box-shadow 0.12s;
 }
-.bwl-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
-}
+.bwl-card:hover { transform: translateY(-2px); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55); }
 .bwl-card.bwl-done { opacity: 0.55; }
 .bwl-card.bwl-done:hover { opacity: 0.9; }
 
-.bwl-thumb {
-  position: relative;
-  aspect-ratio: 16 / 9;
-  background: #1e2026;
-}
-.bwl-thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
+.bwl-thumb { position: relative; aspect-ratio: 16 / 9; background: #1e2026; }
+.bwl-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .bwl-badge {
   position: absolute;
   top: 8px;
@@ -142,8 +121,24 @@
   padding: 3px 7px;
   border-radius: 3px;
 }
-.bwl-badge.bwl-lang-en { background: #f47521; color: #000; }
-.bwl-badge.bwl-lang-ja { background: #3b7dd8; }
+.bwl-badge.bwl-lang-other { background: #6c5ce7; }
+/* Flag badges as inline SVG: Chrome on Windows cannot render flag emoji. */
+.bwl-badge.bwl-flag {
+  width: 30px;
+  height: 20px;
+  padding: 0;
+  background-color: transparent;
+  background-size: cover;
+  background-position: center;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+.bwl-badge.bwl-flag.bwl-lang-en {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 60 30'%3E%3CclipPath id='s'%3E%3Cpath d='M0 0v30h60V0z'/%3E%3C/clipPath%3E%3CclipPath id='t'%3E%3Cpath d='M30 15h30v15zv15H0zH0V0zV0h30z'/%3E%3C/clipPath%3E%3Cg clip-path='url(%23s)'%3E%3Cpath d='M0 0v30h60V0z' fill='%23012169'/%3E%3Cpath d='M0 0l60 30m0-30L0 30' stroke='%23fff' stroke-width='6'/%3E%3Cpath d='M0 0l60 30m0-30L0 30' clip-path='url(%23t)' stroke='%23C8102E' stroke-width='4'/%3E%3Cpath d='M30 0v30M0 15h60' stroke='%23fff' stroke-width='10'/%3E%3Cpath d='M30 0v30M0 15h60' stroke='%23C8102E' stroke-width='6'/%3E%3C/g%3E%3C/svg%3E");
+}
+.bwl-badge.bwl-flag.bwl-lang-ja {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 900 600'%3E%3Crect fill='%23fff' width='900' height='600'/%3E%3Ccircle fill='%23bc002d' cx='450' cy='300' r='180'/%3E%3C/svg%3E");
+}
 .bwl-badge.bwl-new { left: auto; right: 8px; background: #2ecc71; color: #000; }
 
 .bwl-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 5px; }
@@ -161,21 +156,41 @@
 .bwl-line strong { color: #e6e6e6; font-weight: 600; }
 .bwl-date { color: #f47521; font-weight: 600; }
 .bwl-muted { color: #6f6f6f; font-size: 12px; }
+.bwl-warn { color: #ffb347; font-size: 12px; }
 
-.bwl-empty {
-  padding: 60px 24px;
-  text-align: center;
-  color: #8a8a8a;
-}
+.bwl-empty { padding: 60px 24px; text-align: center; color: #8a8a8a; }
 
-.bwl-slider {
-  width: 110px;
-  accent-color: #f47521;
-  vertical-align: middle;
-  margin: 0 6px;
+/* settings modal */
+.bwl-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
 }
-.bwl-pct {
-  min-width: 38px;
-  color: #fff;
-  font-weight: 600;
+.bwl-modal {
+  width: min(520px, calc(100vw - 32px));
+  background: #141519;
+  border: 1px solid #2e3138;
+  border-radius: 8px;
+  padding: 20px 22px 18px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
 }
+.bwl-modal h2 { margin: 0 0 14px; font-size: 18px; color: #fff; }
+.bwl-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 0;
+  border-top: 1px solid #23252b;
+  cursor: pointer;
+}
+.bwl-setting-text strong { display: block; color: #e6e6e6; font-weight: 600; margin-bottom: 3px; }
+.bwl-setting-control { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.bwl-setting-control input[type="checkbox"] { width: 18px; height: 18px; accent-color: #f47521; }
+.bwl-slider { width: 130px; accent-color: #f47521; }
+.bwl-pct { min-width: 40px; color: #fff; font-weight: 600; text-align: right; }
+.bwl-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
