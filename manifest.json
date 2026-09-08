@@ -1,14 +1,14 @@
 {
   "manifest_version": 3,
   "name": "CR Watchlist Plus",
-  "version": "0.2.0",
-  "description": "Sorts your Crunchyroll watchlist by the newest episode you have not watched yet, preferring English audio and falling back to Japanese. Runs entirely in your browser.",
+  "version": "0.3.0",
+  "description": "Sorts your Crunchyroll watchlist by the newest episode you have not watched yet (English preferred, Japanese fallback) and auto-skips intros, recaps and credits. Runs entirely in your browser.",
   "permissions": [
     "storage",
     "unlimitedStorage"
   ],
   "host_permissions": [
-    "https://www.crunchyroll.com/*"
+    "https://*.crunchyroll.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -25,7 +25,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.crunchyroll.com/*"
+        "https://*.crunchyroll.com/*"
       ],
       "js": [
         "content.js"
@@ -33,7 +33,8 @@
       "css": [
         "content.css"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "icons": {

@@ -179,6 +179,8 @@
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
 }
 .bwl-modal h2 { margin: 0 0 14px; font-size: 18px; color: #fff; }
+.bwl-modal h3 { margin: 14px 0 4px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #8a8a8a; }
+.bwl-modal { max-height: calc(100vh - 48px); overflow-y: auto; }
 .bwl-setting {
   display: flex;
   align-items: center;

@@ -11,6 +11,9 @@
  *   4. rank shows by the newest episode you have NOT watched yet, using the
  *      English release date when a dub exists and the Japanese date otherwise.
  *
+ * It also runs inside the video player iframe, where it clicks Crunchyroll's
+ * own "Skip Intro / Recap / Credits" buttons according to your settings.
+ *
  * Nothing leaves the browser except requests to crunchyroll.com.
  */
 (() => {
@@ -23,7 +26,7 @@
   const PREFERRED = ["en-US", "ja-JP"]; // order of preference
   const EPISODES_TTL_MS = 12 * 60 * 60 * 1000; // cache season episode lists 12h
   const CONCURRENCY = 6;
-  const DEFAULT_PREFS = { watchedPct: 75, highWater: true, hideDone: true };
+  const DEFAULT_PREFS = { watchedPct: 75, highWater: true, hideDone: true, skipIntro: true, skipCredits: true, skipRecap: false };
   // Crunchyroll only sets `fully_watched` if you sit through the ending theme.
   // Skipping the credits leaves the playhead at roughly 80-90%, so treat an
   // episode as watched once past prefs.watchedPct OR within this many seconds
@@ -61,10 +64,12 @@
     const m = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/[$()*+.?[\\\]^{|}]/g, "\\$&") + "=([^;]*)"));
     return m ? decodeURIComponent(m[1]) : null;
   };
+  // Domain=.crunchyroll.com so the player iframe (static.crunchyroll.com) sees the same settings.
+  const COOKIE_ATTRS = "Path=/; Domain=.crunchyroll.com; SameSite=Lax; Secure";
   const writeCookie = (name, value, maxAge = COOKIE_MAX_AGE) => {
-    document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; SameSite=Lax; Secure`;
+    document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; ${COOKIE_ATTRS}`;
   };
-  const deleteCookie = (name) => { document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax; Secure`; };
+  const deleteCookie = (name) => { document.cookie = `${name}=; Max-Age=0; ${COOKIE_ATTRS}`; };
 
   function sanitizePrefs(p) {
     const out = { ...DEFAULT_PREFS };
@@ -72,6 +77,7 @@
       if (Number.isFinite(p.watchedPct)) out.watchedPct = Math.min(100, Math.max(50, Math.round(p.watchedPct / 5) * 5));
       if (typeof p.highWater === "boolean") out.highWater = p.highWater;
       if (typeof p.hideDone === "boolean") out.hideDone = p.hideDone;
+      for (const k of ["skipIntro", "skipCredits", "skipRecap"]) if (typeof p[k] === "boolean") out[k] = p[k];
     }
     return out;
   }
@@ -85,6 +91,64 @@
     return prefs;
   }
   const savePrefs = (prefs) => writeCookie(PREFS_COOKIE, JSON.stringify(prefs));
+  function currentPrefs() {
+    try { return sanitizePrefs(JSON.parse(readCookie(PREFS_COOKIE))); } catch { return { ...DEFAULT_PREFS }; }
+  }
+
+  // ------------------------------------------------------------- auto-skip
+  // The video player is an iframe on static.crunchyroll.com. When one of its
+  // "Skip Intro / Skip Recap / Skip Credits" buttons becomes visible, click it
+  // if that kind is enabled in Settings. Runs in every frame; cheap when idle.
+  const SKIP_KIND_BY_WORD = [
+    [/recap/i, "skipRecap"],
+    [/credit|outro|ending/i, "skipCredits"],
+    [/intro|opening/i, "skipIntro"],
+  ];
+  function skipKind(el) {
+    const hay = [el.getAttribute("data-testid"), el.getAttribute("aria-label"), el.textContent].filter(Boolean).join(" ");
+    if (!/skip/i.test(hay)) return null;
+    for (const [re, kind] of SKIP_KIND_BY_WORD) if (re.test(hay)) return kind;
+    return null;
+  }
+  function isVisible(el) {
+    if (!el || !el.isConnected) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== "hidden" && cs.display !== "none" && cs.opacity !== "0";
+  }
+  function startAutoSkip() {
+    const lastClick = {};
+    let scheduled = false;
+    const scan = () => {
+      scheduled = false;
+      const hits = document.querySelectorAll('[data-testid*="skip" i], [aria-label*="skip" i]');
+      if (!hits.length) return;
+      const prefs = currentPrefs();
+      for (const el of hits) {
+        const kind = skipKind(el);
+        if (!kind || !prefs[kind]) continue;
+        const btn = el.closest('[role="button"], button') || el;
+        if (!isVisible(btn) || btn.disabled) continue;
+        const now = Date.now();
+        if (now - (lastClick[kind] || 0) < 1500) continue;
+        lastClick[kind] = now;
+        btn.click();
+        console.info(`[${APP_NAME}] auto-skipped: ${kind}`);
+        return;
+      }
+    };
+    const schedule = () => { if (!scheduled) { scheduled = true; setTimeout(scan, 150); } };
+    const observe = () => {
+      if (!document.body) return false;
+      new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "data-testid"] });
+      setInterval(scan, 1000); // belt and braces: the buttons animate in via CSS in some builds
+      return true;
+    };
+    if (!observe()) document.addEventListener("DOMContentLoaded", observe, { once: true });
+  }
+  startAutoSkip();
+  if (window.top !== window) return; // inside the player (or any other) iframe: auto-skip only
 
   // Per-install device id for the token grant (not a user identifier; it just
   // stops every install from presenting the same device to Crunchyroll).
@@ -519,6 +583,8 @@
       oninput: (ev) => { draft.watchedPct = Number(ev.target.value); pctLabel.textContent = `${draft.watchedPct}%`; } });
     const highWater = el("input", { type: "checkbox", checked: draft.highWater, onchange: (ev) => { draft.highWater = ev.target.checked; } });
     const hideDone = el("input", { type: "checkbox", checked: draft.hideDone, onchange: (ev) => { draft.hideDone = ev.target.checked; } });
+    const toggle = (key) => el("input", { type: "checkbox", checked: draft[key], onchange: (ev) => { draft[key] = ev.target.checked; } });
+    const skipIntro = toggle("skipIntro"), skipCredits = toggle("skipCredits"), skipRecap = toggle("skipRecap");
     const close = () => { if (modal) modal.remove(); modal = null; document.removeEventListener("keydown", onKey); };
     const onKey = (ev) => { if (ev.key === "Escape") close(); };
     const save = () => { prefs = sanitizePrefs(draft); savePrefs(prefs); render(); close(); };
@@ -529,9 +595,14 @@
     modal = el("div", { class: "bwl-modal-backdrop", onclick: (ev) => { if (ev.target === modal) close(); } }, [
       el("div", { class: "bwl-modal", role: "dialog", "aria-label": "Settings" }, [
         el("h2", { text: "Settings" }),
+        el("h3", { text: "Watchlist" }),
         setting("Count an episode as watched at", "Crunchyroll only sets its own flag if you sit through the credits. Anything past this share of the runtime, or within 5 minutes of the end, counts as watched.", [pct, pctLabel]),
         setting("Assume earlier episodes watched", "Everything before the last episode you actually watched in a series is treated as watched. Fills gaps Crunchyroll never recorded.", [highWater]),
         setting("Hide caught-up shows", "Hide shows with nothing left to watch.", [hideDone]),
+        el("h3", { text: "Player" }),
+        setting("Skip intro", "Click Crunchyroll's \"Skip Intro\" button as soon as it appears.", [skipIntro]),
+        setting("Skip credits", "Click \"Skip Credits\" as soon as it appears.", [skipCredits]),
+        setting("Skip recap", "Click \"Skip Recap\" as soon as it appears. Off by default: recaps are sometimes worth watching.", [skipRecap]),
         el("div", { class: "bwl-modal-actions" }, [
           el("button", { text: "Cancel", onclick: close }),
           el("button", { class: "bwl-primary", text: "Save", onclick: save }),
