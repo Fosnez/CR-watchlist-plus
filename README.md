@@ -33,7 +33,7 @@ For each show, for each episode:
 
 1. Collect the Japanese and English versions (their ids and release dates).
 2. Arrival date = English release if an English version exists, else Japanese.
-3. The episode is *watched* if **either** version is fully watched in your playheads.
+3. The episode is *watched* if **either** version is fully watched in your playheads, **or** its playhead is past 80% / within five minutes of the end. Crunchyroll only sets its own completed flag if you sit through the ending theme; skipping the credits leaves episodes at 83 to 89% and otherwise they would resurface as unwatched. Tune `WATCHED_FRACTION` and `WATCHED_TAIL_SECONDS` in `content.js`.
 
 A show's sort key is the latest arrival date among its unwatched, already-released episodes. Shows with no unwatched episodes are ranked by their latest arrival overall and shown in the "Caught up" section.
 

@@ -20,6 +20,11 @@
   const PREFERRED = ["en-US", "ja-JP"]; // order of preference
   const EPISODES_TTL_MS = 12 * 60 * 60 * 1000; // cache season episode lists 12h
   const CONCURRENCY = 6;
+  // Crunchyroll only sets `fully_watched` if you sit through the ending theme.
+  // Skipping the credits leaves the playhead at ~83-89%, so treat an episode as
+  // watched once you are past this fraction OR within this many seconds of the end.
+  const WATCHED_FRACTION = 0.8;
+  const WATCHED_TAIL_SECONDS = 300;
   // Public client id the Crunchyroll web app uses for the cookie -> token grant.
   const WEB_CLIENT_BASIC = "bm9haWhkZXZtXzZpeWcwYThsMHE6";
   const DEVICE_ID = "8b0ec7a1-3f9b-4a3e-9c2f-0e1d2c3b4a59";
@@ -123,6 +128,14 @@
     }
     await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
     return results;
+  }
+
+  function isWatched(playhead, durationMs) {
+    if (!playhead) return false;
+    if (playhead.fully_watched) return true;
+    const dur = (durationMs || 0) / 1000;
+    if (!dur || !playhead.playhead) return false;
+    return playhead.playhead / dur >= WATCHED_FRACTION || dur - playhead.playhead <= WATCHED_TAIL_SECONDS;
   }
 
   const releaseDate = (e) => e.premium_available_date || e.availability_starts || e.upload_date || e.episode_air_date || null;
@@ -241,7 +254,7 @@
         if (!arrival || !arrival.date || Date.parse(arrival.date) > now) continue; // not released yet
         const lang = en ? "en-US" : "ja-JP";
         const vs = Object.values(ep.versions);
-        const watched = vs.some((v) => playheads.get(v.id)?.fully_watched);
+        const watched = vs.some((v) => isWatched(playheads.get(v.id), v.dur));
         const started = vs.some((v) => (playheads.get(v.id)?.playhead || 0) > 0);
         const cand = { ep, lang, date: arrival.date, id: arrival.id, watched, started, dubbed: !!en };
         if (!newestAny || cand.date > newestAny.date) newestAny = cand;
