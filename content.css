@@ -139,6 +139,10 @@
 .bwl-badge.bwl-flag.bwl-lang-ja {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 900 600'%3E%3Crect fill='%23fff' width='900' height='600'/%3E%3Ccircle fill='%23bc002d' cx='450' cy='300' r='180'/%3E%3C/svg%3E");
 }
+.bwl-badge.bwl-flag.bwl-lang-de { background-image: linear-gradient(#000 0 33.3%, #dd0000 33.3% 66.6%, #ffce00 66.6%); }
+.bwl-badge.bwl-flag.bwl-lang-fr { background-image: linear-gradient(90deg, #0055a4 0 33.3%, #fff 33.3% 66.6%, #ef4135 66.6%); }
+.bwl-badge.bwl-flag.bwl-lang-it { background-image: linear-gradient(90deg, #009246 0 33.3%, #fff 33.3% 66.6%, #ce2b37 66.6%); }
+.bwl-badge.bwl-flag.bwl-lang-ru { background-image: linear-gradient(#fff 0 33.3%, #0039a6 33.3% 66.6%, #d52b1e 66.6%); }
 .bwl-badge.bwl-new { left: auto; right: 8px; background: #2ecc71; color: #000; }
 
 .bwl-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 5px; }
@@ -196,3 +200,12 @@
 .bwl-slider { width: 130px; accent-color: #f47521; }
 .bwl-pct { min-width: 40px; color: #fff; font-weight: 600; text-align: right; }
 .bwl-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+.bwl-setting-block { flex-direction: column; align-items: stretch; cursor: default; }
+.bwl-langs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 14px; margin-top: 8px; max-height: 210px; overflow-y: auto; padding-right: 4px; }
+.bwl-lang { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 0; color: #bdbdbd; font-size: 13px; }
+.bwl-lang label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.bwl-lang input[type="checkbox"] { width: 15px; height: 15px; accent-color: #f47521; }
+.bwl-lang-on { color: #fff; }
+.bwl-lang-rank { min-width: 16px; color: #f47521; font-weight: 700; }
+.bwl-lang-move button { padding: 0 5px; font-size: 10px; line-height: 18px; margin-left: 2px; }
+.bwl-lang-move button[disabled] { opacity: 0.3; cursor: default; }

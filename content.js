@@ -21,12 +21,20 @@
 
   // ---------------------------------------------------------------- config
   const APP_NAME = "CR Watchlist Plus";
-  const TAGLINE = "newest unwatched episode first · EN preferred, JA fallback";
   const OPEN_HASH = "#cr-watchlist-plus";
-  const PREFERRED = ["en-US", "ja-JP"]; // order of preference
+  // Audio locales Crunchyroll offers. Order here is only the order shown in Settings.
+  const LOCALES = [
+    ["en-US", "English"], ["ja-JP", "Japanese"], ["de-DE", "German"], ["fr-FR", "French"],
+    ["es-419", "Spanish (Latin America)"], ["es-ES", "Spanish (Spain)"], ["pt-BR", "Portuguese (Brazil)"],
+    ["it-IT", "Italian"], ["ru-RU", "Russian"], ["pl-PL", "Polish"], ["tr-TR", "Turkish"], ["ar-SA", "Arabic"],
+    ["hi-IN", "Hindi"], ["ta-IN", "Tamil"], ["te-IN", "Telugu"], ["ko-KR", "Korean"], ["zh-CN", "Chinese (Mandarin)"],
+    ["id-ID", "Indonesian"], ["ms-MY", "Malay"], ["th-TH", "Thai"], ["vi-VN", "Vietnamese"], ["ca-ES", "Catalan"],
+  ];
+  const LOCALE_NAME = Object.fromEntries(LOCALES);
+  const DEFAULT_LANGUAGES = ["en-US", "ja-JP"];
   const EPISODES_TTL_MS = 12 * 60 * 60 * 1000; // cache season episode lists 12h
   const CONCURRENCY = 6;
-  const DEFAULT_PREFS = { watchedPct: 75, highWater: true, hideDone: true, skipIntro: true, skipCredits: true, skipRecap: false };
+  const DEFAULT_PREFS = { watchedPct: 75, highWater: true, hideDone: true, languages: DEFAULT_LANGUAGES, strictLanguages: true, skipIntro: true, skipCredits: true, skipRecap: false };
   // Crunchyroll only sets `fully_watched` if you sit through the ending theme.
   // Skipping the credits leaves the playhead at roughly 80-90%, so treat an
   // episode as watched once past prefs.watchedPct OR within this many seconds
@@ -42,8 +50,8 @@
   const COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
   const PREFS_COOKIE = "cr_watchlist_plus_prefs";
   const ACTIVE_COOKIE = "cr_watchlist_plus_active";
-  const DATA_KEY = "data:v3";
-  const SEASON_KEY_PREFIX = `season:v3:${PREFERRED.join("+")}:`;
+  const DATA_KEY = "data:v4";
+  const seasonKey = (langs, seasonId) => `season:v4:${langs.join("+")}:${seasonId}`;
 
   // --------------------------------------------------------------- storage
   // Result cache: chrome.storage.local when running as an extension; a
@@ -77,7 +85,11 @@
       if (Number.isFinite(p.watchedPct)) out.watchedPct = Math.min(100, Math.max(50, Math.round(p.watchedPct / 5) * 5));
       if (typeof p.highWater === "boolean") out.highWater = p.highWater;
       if (typeof p.hideDone === "boolean") out.hideDone = p.hideDone;
-      for (const k of ["skipIntro", "skipCredits", "skipRecap"]) if (typeof p[k] === "boolean") out[k] = p[k];
+      for (const k of ["skipIntro", "skipCredits", "skipRecap", "strictLanguages"]) if (typeof p[k] === "boolean") out[k] = p[k];
+      if (Array.isArray(p.languages)) {
+        const langs = [...new Set(p.languages.filter((l) => LOCALE_NAME[l]))];
+        if (langs.length) out.languages = langs;
+      }
     }
     return out;
   }
@@ -279,22 +291,22 @@
   // Merge key that does not depend on which audio version a row came from.
   const episodeKey = (raw, seasonId) => raw.identifier || `${seasonId}|${raw.season_number ?? ""}|${raw.sequence_number ?? raw.episode_number ?? raw.id}`;
 
-  async function loadSeason(season, force) {
-    const cacheKey = SEASON_KEY_PREFIX + season.id;
+  async function loadSeason(season, langs, force) {
+    const cacheKey = seasonKey(langs, season.id);
     if (!force) {
       const cached = await store.get(cacheKey);
       if (cached && Date.now() - cached.fetchedAt < EPISODES_TTL_MS) return cached.episodes;
     }
-    const lists = await Promise.all(PREFERRED.map((audio) => fetchEpisodes(season.id, audio)));
+    const lists = await Promise.all(langs.map((audio) => fetchEpisodes(season.id, audio)));
     const byKey = new Map();
     lists.forEach((list, idx) => {
-      const wanted = PREFERRED[idx];
+      const wanted = langs[idx];
       for (const raw of list) {
         const locale = raw.audio_locale || "und";
         // The API falls back to another language when `wanted` has no version.
         // Keep the row if it IS the wanted language, or if it is a language we
         // never ask for (e.g. a Korean original) so such shows are not empty.
-        if (locale !== wanted && PREFERRED.includes(locale)) continue;
+        if (locale !== wanted && langs.includes(locale)) continue;
         const key = episodeKey(raw, season.id);
         const rec = byKey.get(key) || {
           key,
@@ -322,7 +334,7 @@
   const episodeSeqOrder = (a, b) => (seqOf(a) - seqOf(b)) || String(a.key).localeCompare(String(b.key));
 
   /** Fetch everything needed to rank: watchlist, episodes per instalment, playheads. */
-  async function fetchData({ force = false, onStatus, onProgress } = {}) {
+  async function fetchData({ force = false, langs, onStatus, onProgress }) {
     onStatus("Reading your watchlist…");
     const wl = await fetchWatchlist();
     const shows = wl.map((it) => {
@@ -351,7 +363,7 @@
 
     await mapLimit(seasonJobs, CONCURRENCY, async ({ show, season, order }) => {
       try {
-        const eps = await loadSeason(season, force);
+        const eps = await loadSeason(season, langs, force);
         show.episodes.push(...eps.map((e) => ({ ...e, catalogueOrder: order })));
       } catch (e) {
         show.failed.push(season.title || season.id);
@@ -364,7 +376,7 @@
     for (const show of shows) for (const ep of show.episodes) for (const v of Object.values(ep.versions)) ids.push(v.id);
     const playheads = await fetchPlayheads(ids);
     onProgress(1);
-    return { shows, playheads, builtAt: Date.now(), showCount: shows.length };
+    return { shows, playheads, languages: langs, builtAt: Date.now(), showCount: shows.length };
   }
 
   /**
@@ -377,9 +389,9 @@
   function epChrono(e) {
     const a = ts(e.air);
     if (a !== null) return a;
-    for (const l of PREFERRED) { const d = e.versions[l] && ts(e.versions[l].date); if (d !== null && d !== undefined) return d; }
-    for (const v of Object.values(e.versions)) { const d = ts(v.date); if (d !== null) return d; }
-    return null;
+    let best = null;
+    for (const v of Object.values(e.versions)) { const d = ts(v.date); if (d !== null && (best === null || d < best)) best = d; }
+    return best;
   }
   function assignInstalmentOrder(show) {
     const start = new Map(), catalogue = new Map(), title = new Map();
@@ -396,9 +408,11 @@
   }
   const episodeOrder = (a, b) => (a.sOrder - b.sOrder) || episodeSeqOrder(a, b);
 
-  // The version whose arrival date drives newness: first preferred locale present, else any.
-  function arrivalVersion(ep) {
-    for (const l of PREFERRED) if (ep.versions[l]) return { lang: l, v: ep.versions[l] };
+  // The version whose arrival date drives newness: first chosen language present.
+  // With strict mode off, an episode available only in other languages still counts.
+  function arrivalVersion(ep, prefs) {
+    for (const l of prefs.languages) if (ep.versions[l]) return { lang: l, v: ep.versions[l] };
+    if (prefs.strictLanguages) return null;
     const other = Object.keys(ep.versions).sort()[0];
     return other ? { lang: other, v: ep.versions[other] } : null;
   }
@@ -423,9 +437,9 @@
       }
       let newestUnwatched = null, newestAny = null, unwatchedCount = 0;
       eps.forEach((ep, i) => {
-        const a = arrivalVersion(ep);
+        const a = arrivalVersion(ep, prefs);
         const at = a ? ts(a.v.date) : null;
-        if (at === null || at > now) return; // not released yet / no usable date
+        if (at === null || at > now) return; // not in your languages / not released yet / no usable date
         const started = Object.values(ep.versions).some((v) => (playheads[v.id]?.playhead || 0) > 0);
         const cand = { ep, lang: a.lang, at, id: a.v.id, slug: a.v.slug, watched: flags[i], started };
         if (!newestAny || cand.at > newestAny.at) newestAny = cand;
@@ -475,7 +489,9 @@
   }
   const fmtDate = (at) => new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   const langLabel = (l) => (l === "en-US" ? "EN" : l === "ja-JP" ? "JA" : (l || "").split("-")[0].toUpperCase());
-  const LANG_NAMES = { "en-US": "English audio", "ja-JP": "Japanese audio", "de-DE": "German audio", "fr-FR": "French audio", "es-419": "Spanish (Latin America) audio", "es-ES": "Spanish audio", "pt-BR": "Portuguese (Brazil) audio", "it-IT": "Italian audio", "ru-RU": "Russian audio", "hi-IN": "Hindi audio", "ko-KR": "Korean audio", "zh-CN": "Chinese audio", "ar-SA": "Arabic audio" };
+  const langName = (l) => (LOCALE_NAME[l] ? `${LOCALE_NAME[l]} audio` : l);
+  // Flags drawn in CSS; anything else gets a text badge.
+  const FLAG_CLASS = { "en-US": "en", "ja-JP": "ja", "de-DE": "de", "fr-FR": "fr", "it-IT": "it", "ru-RU": "ru" };
 
   // "Season 2" -> "S2 E9". Other instalments (movie, OVA collection) keep their
   // title, minus the series name and audio suffixes Crunchyroll sometimes adds.
@@ -506,7 +522,7 @@
         el("span", { class: "bwl-date", text: relTime(c.at) }),
         el("span", { class: "bwl-muted", text: `  (${fmtDate(c.at)})` }),
       ]));
-      if (!done && c.lang === "ja-JP" && PREFERRED[0] === "en-US") lines.push(el("div", { class: "bwl-muted", text: "No English dub of this episode yet" }));
+      if (!done && c.lang !== prefs.languages[0]) lines.push(el("div", { class: "bwl-muted", text: `No ${LOCALE_NAME[prefs.languages[0]] || prefs.languages[0]} audio for this episode yet` }));
       if (!done) lines.push(el("div", { class: "bwl-muted", text: `${show.unwatchedCount} unwatched episode${show.unwatchedCount === 1 ? "" : "s"}` + (show.inferredWatched ? ` · ${show.inferredWatched} earlier assumed watched` : "") }));
       if (done) lines.push(el("div", { class: "bwl-muted", text: "All caught up" }));
     } else {
@@ -515,12 +531,12 @@
     if (show.failed.length) lines.push(el("div", { class: "bwl-warn", text: `Could not load: ${show.failed.join(", ")}. Ranking may be stale.` }));
     // Flag badge: drawn in CSS (SVG) for EN/JA because Chrome on Windows cannot
     // render flag emoji; other languages fall back to a text badge.
-    const flagClass = c ? ({ "en-US": "bwl-flag bwl-lang-en", "ja-JP": "bwl-flag bwl-lang-ja" }[c.lang] || "bwl-lang-other") : "";
+    const flagClass = c ? (FLAG_CLASS[c.lang] ? `bwl-flag bwl-lang-${FLAG_CLASS[c.lang]}` : "bwl-lang-other") : "";
     const hasFlag = flagClass.includes("bwl-flag");
     return el("a", { class: "bwl-card" + (done ? " bwl-done" : ""), href }, [
       el("div", { class: "bwl-thumb" }, [
         thumb ? el("img", { src: thumb, loading: "lazy", alt: "" }) : null,
-        c ? el("span", { class: `bwl-badge ${flagClass}`, title: LANG_NAMES[c.lang] || c.lang, "aria-label": LANG_NAMES[c.lang] || c.lang, text: hasFlag ? "" : langLabel(c.lang) }) : null,
+        c ? el("span", { class: `bwl-badge ${flagClass}`, title: langName(c.lang), "aria-label": langName(c.lang), text: hasFlag ? "" : langLabel(c.lang) }) : null,
         !done && c && Date.now() - c.at < 7 * 86_400_000 ? el("span", { class: "bwl-badge bwl-new", text: "NEW" }) : null,
       ]),
       el("div", { class: "bwl-body" }, [el("div", { class: "bwl-title", text: show.title }), ...lines]),
@@ -528,7 +544,8 @@
   }
 
   // ------------------------------------------------------------ ui: state
-  let root, statusEl, progressEl, gridsEl, toggleBtn, modal;
+  let root, statusEl, progressEl, gridsEl, toggleBtn, modal, taglineEl;
+  const tagline = (p) => `newest unwatched episode first · audio: ${p.languages.map(langLabel).join(" › ")}${p.strictLanguages ? "" : " › any"}`;
   let data = null, view = null, prefs = { ...DEFAULT_PREFS };
   let prevHtmlOverflow = "";
 
@@ -566,7 +583,7 @@
     loading = true;
     setProgress(0);
     try {
-      data = await fetchData({ force, onStatus: setStatus, onProgress: setProgress });
+      data = await fetchData({ force, langs: prefs.languages, onStatus: setStatus, onProgress: setProgress });
       render();
       setStatus(`${data.showCount} shows · updated ${new Date(data.builtAt).toLocaleTimeString()}`);
     } catch (e) {
@@ -591,9 +608,45 @@
     const hideDone = el("input", { type: "checkbox", checked: draft.hideDone, onchange: (ev) => { draft.hideDone = ev.target.checked; } });
     const toggle = (key) => el("input", { type: "checkbox", checked: draft[key], onchange: (ev) => { draft[key] = ev.target.checked; } });
     const skipIntro = toggle("skipIntro"), skipCredits = toggle("skipCredits"), skipRecap = toggle("skipRecap");
+    const strict = toggle("strictLanguages");
+    draft.languages = [...draft.languages];
+    // Ordered language picker: chosen languages first (in priority order) with
+    // up/down controls, then the rest alphabetically.
+    const langList = el("div", { class: "bwl-langs" });
+    const renderLangs = () => {
+      langList.replaceChildren();
+      const chosen = draft.languages;
+      const rest = LOCALES.map(([c]) => c).filter((c) => !chosen.includes(c)).sort((a, b) => LOCALE_NAME[a].localeCompare(LOCALE_NAME[b]));
+      [...chosen, ...rest].forEach((code) => {
+        const i = chosen.indexOf(code);
+        const on = i >= 0;
+        const cb = el("input", { type: "checkbox", checked: on, onchange: (ev) => {
+          if (ev.target.checked) { if (!chosen.includes(code)) chosen.push(code); }
+          else if (chosen.length > 1) { chosen.splice(chosen.indexOf(code), 1); }
+          renderLangs();
+        } });
+        const move = (dir) => { const j = i + dir; if (j < 0 || j >= chosen.length) return; [chosen[i], chosen[j]] = [chosen[j], chosen[i]]; renderLangs(); };
+        langList.append(el("div", { class: "bwl-lang" + (on ? " bwl-lang-on" : "") }, [
+          el("label", {}, [cb, el("span", { class: "bwl-lang-rank", text: on ? `${i + 1}.` : "" }), el("span", { text: LOCALE_NAME[code] }), el("span", { class: "bwl-muted", text: ` ${code}` })]),
+          on ? el("span", { class: "bwl-lang-move" }, [
+            el("button", { type: "button", text: "▲", title: "Higher priority", disabled: i === 0, onclick: () => move(-1) }),
+            el("button", { type: "button", text: "▼", title: "Lower priority", disabled: i === chosen.length - 1, onclick: () => move(1) }),
+          ]) : null,
+        ]));
+      });
+    };
+    renderLangs();
     const close = () => { if (modal) modal.remove(); modal = null; document.removeEventListener("keydown", onKey); };
     const onKey = (ev) => { if (ev.key === "Escape") close(); };
-    const save = () => { prefs = sanitizePrefs(draft); savePrefs(prefs); render(); close(); };
+    const save = () => {
+      const before = prefs.languages.join(",");
+      prefs = sanitizePrefs(draft);
+      savePrefs(prefs);
+      taglineEl.textContent = tagline(prefs);
+      close();
+      if (prefs.languages.join(",") !== before) load(false); // new languages need new episode lists
+      else render();
+    };
     const setting = (title, help, control) => el("label", { class: "bwl-setting" }, [
       el("div", { class: "bwl-setting-text" }, [el("strong", { text: title }), el("div", { class: "bwl-muted", text: help })]),
       el("div", { class: "bwl-setting-control" }, control),
@@ -605,6 +658,12 @@
         setting("Count an episode as watched at", "Crunchyroll only sets its own flag if you sit through the credits. Anything past this share of the runtime, or within 5 minutes of the end, counts as watched.", [pct, pctLabel]),
         setting("Assume earlier episodes watched", "Everything before the last episode you actually watched in a series is treated as watched. Fills gaps Crunchyroll never recorded.", [highWater]),
         setting("Hide caught-up shows", "Hide shows with nothing left to watch.", [hideDone]),
+        el("h3", { text: "Audio languages" }),
+        el("div", { class: "bwl-setting bwl-setting-block" }, [
+          el("div", { class: "bwl-setting-text" }, [el("strong", { text: "Languages you watch, in order of preference" }), el("div", { class: "bwl-muted", text: "An episode's arrival date is its release in the first of these it is available in. Changing the list refetches episode data (one request per language per season)." })]),
+          langList,
+        ]),
+        setting("Only count episodes available in these languages", "On: a show with no episode in your languages is not listed as new. Off: such episodes still count, dated by whatever language they exist in.", [strict]),
         el("h3", { text: "Player" }),
         setting("Skip intro", "Click Crunchyroll's \"Skip Intro\" button as soon as it appears.", [skipIntro]),
         setting("Skip credits", "Click \"Skip Credits\" as soon as it appears.", [skipCredits]),
@@ -628,7 +687,7 @@
     gridsEl = el("div");
     root.append(
       el("div", { class: "bwl-bar" }, [
-        el("div", { class: "bwl-heading" }, [el("h1", { text: APP_NAME }), el("div", { class: "bwl-tagline", text: TAGLINE })]),
+        el("div", { class: "bwl-heading" }, [el("h1", { text: APP_NAME }), (taglineEl = el("div", { class: "bwl-tagline", text: tagline(prefs) }))]),
         el("span", { class: "bwl-spacer" }),
         el("button", { text: "Settings", onclick: openSettings }),
         el("button", { text: "Refresh", title: "Re-check playheads and new episodes (uses cached episode lists)", onclick: () => load(false) }),
@@ -646,6 +705,7 @@
   async function show() {
     buildUi();
     prefs = loadPrefs(); // also (re)writes the cookie: defaults on first run, refreshed clock otherwise
+    taglineEl.textContent = tagline(prefs);
     writeCookie(ACTIVE_COOKIE, "1");
     if (showing) return;
     showing = true;

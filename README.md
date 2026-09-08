@@ -4,7 +4,7 @@ A small Chrome extension that gives your Crunchyroll watchlist the one sort orde
 
 > **The show with the newest episode you haven't watched yet comes first.**
 
-English release dates are used when an English dub of that episode exists, Japanese otherwise. Episodes you already finished in either language stay finished, so a dub arriving months after you watched the sub does not drag a show back to the top. Shows with nothing left to watch are hidden by default, or shown greyed in a "Caught up" section if you prefer.
+You choose the audio languages you watch, in order of preference (English then Japanese by default). An episode's arrival date is its release in the first of those it exists in, so a dub arriving months after you watched the sub does not drag a show back to the top, and episodes you already finished in any language stay finished. Shows with nothing left to watch are hidden by default, or shown greyed in a "Caught up" section if you prefer.
 
 It also auto-skips intros and credits in the player (and recaps, if you turn that on) by clicking Crunchyroll's own skip buttons the moment they appear.
 
@@ -22,8 +22,8 @@ Crunchyroll's "Recent Activity" sort bumps a show whenever *anything* about it c
 
 ## What it does
 
-- Reads your watchlist, every season (and movie, and OVA collection) of every show, and every episode in both Japanese and English audio.
-- Reads your playheads for **both** language versions of each episode, so an episode watched in Japanese counts as watched when the English dub arrives.
+- Reads your watchlist, every season (and movie, and OVA collection) of every show, and every episode in each audio language you have chosen.
+- Reads your playheads for **every** language version of each episode, so an episode watched in Japanese counts as watched when the English dub arrives.
 - Treats an episode as watched once you are past an adjustable share of its runtime (default 75%), because Crunchyroll only sets its own completed flag if you sit through the ending theme. Skipping the credits otherwise leaves finished episodes at 80 to 90% and they resurface as unwatched.
 - Optionally assumes everything *before* the last episode you watched in a series is watched too (on by default, see below). This fills gaps such as pre-merger Funimation history that never reached Crunchyroll.
 - Ranks shows by the newest unwatched episode's arrival date and renders its own grid over the watchlist page. Each card links to that exact episode in the language shown.
@@ -60,11 +60,15 @@ Remove it from `chrome://extensions`. Nothing is left behind on Crunchyroll's si
 
 ### Settings
 
+![The settings dialog](docs/settings.png)
+
 | Setting | Default | What it does |
 |---|---|---|
 | **Count an episode as watched at** | 75% | Threshold past which an episode counts as watched (50 to 100%). An episode also counts if within 5 minutes of the end, or if Crunchyroll's own completed flag is set. |
 | **Assume earlier episodes watched** | on | The high-water rule. Everything before the last episode you actually watched in a series is treated as watched. Cards show how many episodes were inferred. |
 | **Hide caught-up shows** | on | Hides shows with nothing left to watch. When on, a footnote says how many are hidden. |
+| **Languages you watch, in order of preference** | English, Japanese | Tick the audio languages you watch and order them with the arrows. An episode's arrival date is its release in the first ticked language it exists in, and the card links to that version. Changing the list refetches episode data: one request per language per season, so five languages is roughly two and a half times the first-load time of two. At least one language must stay ticked. |
+| **Only count episodes available in these languages** | on | On: an episode that exists in none of your languages is ignored, so a show whose latest episode is Japanese-only is not "new" for an English-only viewer. Off: such episodes still count, dated and linked by whatever language they exist in. |
 | **Skip intro** | on | Player: click "Skip Intro" as soon as it appears. |
 | **Skip credits** | on | Player: click "Skip Credits" as soon as it appears. |
 | **Skip recap** | off | Player: click "Skip Recap" as soon as it appears. Off by default because recaps are sometimes worth watching. |
@@ -73,11 +77,11 @@ Settings are stored in a cookie for `.crunchyroll.com`, not in the extension, so
 
 ### Reading a card
 
-- **Flag badge** (top left of the thumbnail): the audio language the card's episode is in. Union Jack for English, Hinomaru for Japanese, a text code for anything else.
+- **Flag badge** (top left of the thumbnail): the audio language the card's episode is in. Flags for English (Union Jack), Japanese, German, French, Italian and Russian; a two-letter text code for anything else. Hover for the full name.
 - **NEW** badge: that episode arrived in the last 7 days.
 - **Next new:** the newest episode you have not started. **Continue:** you have started it. **Latest:** shown on caught-up shows for the most recent episode.
 - **S2 E9**, **Operation Desert Pasta**, **OVA Season 1 E3**: Crunchyroll's instalment title, not its internal season counter (which numbers movies and OVAs as seasons), then the episode number.
-- **No English dub of this episode yet**: the newest unwatched episode exists only in Japanese so far.
+- **No English audio for this episode yet** (or whichever language is first in your list): the newest unwatched episode is not yet available in your first-choice language, so it is dated by the next one that has it.
 - **N unwatched episodes · M earlier assumed watched**: the count still to watch, and how many the high-water rule filled in.
 - **Could not load** (orange): part or all of that show failed to fetch. Such shows are listed in their own section, never as caught up, so a network hiccup cannot hide a new episode. Try **Refresh**.
 
@@ -92,12 +96,12 @@ Every decision is logged in the player frame's console as `[CR Watchlist Plus] a
 For each show:
 
 1. Instalments (seasons, movies, OVA collections) are put in **chronological order by the original air date of their first episode**, with Crunchyroll's episode sequence kept inside each. Crunchyroll's own season order is editorial and often lists OVAs and movies after the main run.
-2. For each episode, collect the Japanese and English versions with their ids and release dates. *Arrival date* is the English release if an English version exists, else the Japanese release, else whatever original language the show has.
+2. For each episode, collect the versions in each of your chosen languages, with their ids and release dates. *Arrival date* is the release in the first of your languages the episode exists in. With "Only count episodes available in these languages" off, an episode in none of them is dated by whatever language it does exist in; with it on, that episode is ignored.
 3. An episode is **watched** if either version is fully watched, or either version's playhead is past the threshold or within five minutes of the end (for episodes longer than five minutes).
 4. With the high-water rule on, every episode that precedes the last watched one (in the order from step 1) is also treated as watched.
 5. The show's sort key is the latest arrival date among its unwatched, already-released episodes. Shows with none are ranked by their latest arrival overall and shown under "Caught up" if that section is enabled.
 
-To prefer Japanese over English, change `PREFERRED` at the top of `content.js`. The episode cache is keyed by that setting, so the change takes effect on the next open.
+The episode cache is keyed by the language list, so changing languages refetches once and then caches as normal.
 
 ## Known issues and edge cases
 
@@ -107,7 +111,8 @@ To prefer Japanese over English, change `PREFERRED` at the top of `content.js`. 
 - **Messy instalment names.** Labels strip the series name and "(English Dub)" and recognise "Season 2", "Season2" and Roman numerals, but instalments whose title is only a year or a subtitle show that fragment, for example "3199 E19".
 - **Legacy dub seasons.** Very old catalogue entries where the dub is a separate season with no version links are treated as separate instalments, so watched-in-Japanese suppression does not apply to them.
 - **Auto-skip depends on Crunchyroll's markup and English labels.** Detection finds buttons by a `data-testid` or aria-label containing "skip", then classifies by the visible text ("Skip Intro", "Skip Recap", "Skip Credits", plus "opening", "outro", "ending" variants). Other interface languages are not matched; a player UI change that drops those attributes will stop it silently. There is no "Skip Preview" or auto-play-next.
-- **Flags are drawn, not emoji.** Chrome on Windows cannot render flag emoji, so the two flags are inline SVGs and other languages fall back to a two-letter code.
+- **Flags are drawn, not emoji.** Chrome on Windows cannot render flag emoji, so the six flags are CSS (two inline SVGs, four gradients) and other languages fall back to a two-letter code.
+- **Many languages means many requests.** Each chosen language costs one request per season on a cold cache. Two languages on a 40-show list is about 350 requests; six languages roughly triples the fetch phase. Crunchyroll rate-limits gently and the extension backs off and retries, but a very long list with many languages will take a minute or two on first load.
 - **Unofficial API.** Crunchyroll can change endpoints or the web client id without notice. If the overlay shows "Token exchange failed", compare the `WEB_CLIENT_BASIC` constant in `content.js` with the Authorization header the site sends to `/auth/v1/token` (DevTools → Network). The id is Crunchyroll's public web-app client id with an empty secret; it is not a credential.
 - **Chrome only.** Manifest V3 with a service worker. Firefox would need a `browser_specific_settings` block and a background script.
 
@@ -120,7 +125,7 @@ To prefer Japanese over English, change `PREFERRED` at the top of `content.js`. 
 | `content.css` | Overlay styling, including the SVG flag badges. |
 | `background.js` | Toolbar click → focus an open watchlist tab and show the overlay, or open one. |
 | `icons/` | Toolbar and extension icons. |
-| `docs/screenshot.png` | The image above. |
+| `docs/screenshot.png`, `docs/settings.png` | The images above. |
 
 ## Privacy
 

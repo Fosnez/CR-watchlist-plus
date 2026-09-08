@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "CR Watchlist Plus",
-  "version": "0.3.0",
-  "description": "Sorts your Crunchyroll watchlist by the newest episode you have not watched yet (English preferred, Japanese fallback) and auto-skips intros, recaps and credits. Runs entirely in your browser.",
+  "version": "0.4.0",
+  "description": "Sorts your Crunchyroll watchlist by the newest episode you have not watched yet, in the audio languages you choose, and auto-skips intros, recaps and credits. Runs entirely in your browser.",
   "permissions": [
     "storage",
     "unlimitedStorage"
