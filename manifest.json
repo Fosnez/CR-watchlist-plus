@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Better Watchlist for Crunchyroll",
+  "version": "0.1.0",
+  "description": "Sorts your Crunchyroll watchlist by the newest episode you have not watched yet, preferring English audio and falling back to Japanese. Runs entirely in your browser.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://www.crunchyroll.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Open Better Watchlist"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.crunchyroll.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
