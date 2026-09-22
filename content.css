@@ -275,3 +275,7 @@
 .bwl-update { color: #f47521; }
 .bwl-update:hover { text-decoration: underline; }
 .bwl-update[hidden] { display: none; }
+
+/* Show title inside a card: opens the series page instead of playing. */
+.bwl-series-link { cursor: pointer; }
+.bwl-series-link:hover, .bwl-series-link:focus-visible { color: #f47521; text-decoration: underline; text-underline-offset: 2px; outline: none; }

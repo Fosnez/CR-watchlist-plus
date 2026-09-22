@@ -26,7 +26,7 @@ Crunchyroll's "Recent Activity" sort bumps a show whenever *anything* about it c
 - Reads your playheads for **every** language version of each episode, so an episode watched in Japanese counts as watched when the English dub arrives.
 - Treats an episode as watched once you are past an adjustable share of its runtime (default 75%), because Crunchyroll only sets its own completed flag if you sit through the ending theme. Skipping the credits otherwise leaves finished episodes at 80 to 90% and they resurface as unwatched.
 - Optionally assumes everything *before* the last episode you watched in a series is watched too (on by default, see below). This fills gaps such as pre-merger Funimation history that never reached Crunchyroll.
-- Ranks shows by the newest unwatched episode's arrival date and renders its own grid over the watchlist page. Each card links to that exact episode in the language shown.
+- Ranks shows by the newest unwatched episode's arrival date and renders its own grid over the watchlist page. Clicking a card plays the next episode you have not watched, in order; clicking the show's name opens its series page.
 - Remembers that you had the overlay open. Click an episode, watch it, come back to the watchlist by any route, and the overlay is there again with that show's progress already updated and the rest refreshing behind it.
 - In the player, watches for Crunchyroll's "Skip Intro", "Skip Recap" and "Skip Credits" buttons and clicks the ones you have enabled as soon as they become visible. No seeking of its own, so it can only skip what Crunchyroll has marked.
 - On a show's page, and in the player's "See More Episodes" panel, re-sorts Crunchyroll's own season dropdown into air-date order and prefixes each instalment with the date it was sorted by ("2019-07-09 · OVA Season 1"), so OVAs and movies sit where they belong in the run instead of at the bottom.
@@ -91,7 +91,9 @@ Settings are stored in a cookie for `.crunchyroll.com`, not in the extension, so
 - **Flag badge** (top left of the thumbnail): the audio language the card's episode is in. Flags for English (Union Jack), Japanese, German, French, Italian and Russian; a two-letter text code for anything else. Hover for the full name.
 - **NEW** badge: that episode arrived in the last 7 days.
 - **Episode title** in smaller text under the show name: the episode the card points at.
-- **Next:** the newest episode you have not started. **Continue:** you have started it. **Latest:** shown on caught-up shows for the most recent episode.
+- **Next:** the episode the card plays, the earliest one you have not watched in order (after the high-water rule). **Continue:** you have started it. **Latest:** shown on caught-up shows for the most recent episode.
+- **Newest:** shown when the newest unwatched episode is a later one than the card plays; its date is the one the show is ranked by. When they are the same episode the date sits on the Next line.
+- **Show name**: opens the show's series page rather than playing (Ctrl/middle-click for a new tab). Anywhere else on the card plays the Next episode.
 - **S2 E9**, **Operation Desert Pasta**, **OVA Season 1 E3**: Crunchyroll's instalment title, not its internal season counter (which numbers movies and OVAs as seasons), then the episode number.
 - **No English audio for this episode yet** (or whichever language is first in your list): the newest unwatched episode is not yet available in your first-choice language, so it is dated by the next one that has it.
 - **N unwatched episodes · M earlier assumed watched**: the count still to watch, and how many the high-water rule filled in.

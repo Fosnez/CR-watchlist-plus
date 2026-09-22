@@ -680,7 +680,7 @@
         const last = flags.lastIndexOf(true);
         for (let i = 0; i < last; i++) if (!flags[i]) { flags[i] = true; inferred++; }
       }
-      let newestUnwatched = null, newestAny = null, unwatchedCount = 0;
+      let newestUnwatched = null, newestAny = null, nextUp = null, unwatchedCount = 0;
       eps.forEach((ep, i) => {
         const a = arrivalVersion(ep, prefs);
         const at = a ? ts(a.v.date) : null;
@@ -691,9 +691,11 @@
         if (!flags[i]) {
           unwatchedCount++;
           if (!newestUnwatched || cand.at > newestUnwatched.at) newestUnwatched = cand;
+          if (!nextUp) nextUp = cand; // eps are in watch order, so the first unwatched is the one to play next
         }
       });
       show.newestUnwatched = newestUnwatched;
+      show.nextUp = nextUp;
       show.newestAny = newestAny;
       show.unwatchedCount = unwatchedCount;
       show.inferredWatched = inferred;
@@ -755,18 +757,24 @@
     return single ? short : `${short}${epPart}`;
   }
 
+  // The card plays `c`: the next episode to watch in order (or, when caught up,
+  // the latest). The show is *ranked* by `newest`, the most recently arrived
+  // unwatched episode, so when the two differ the card names both.
   function card(show, { done }) {
-    const c = show.newestUnwatched || show.newestAny;
-    const href = c ? `/watch/${c.id}/${c.slug || ""}` : `/series/${show.seriesId}/${show.slug}`;
+    const newest = show.newestUnwatched;
+    const c = (done ? null : show.nextUp) || newest || show.newestAny;
+    const seriesHref = `/series/${show.seriesId}/${show.slug}`;
+    const href = c ? `/watch/${c.id}/${c.slug || ""}` : seriesHref;
     const thumb = (c && c.ep.thumb) || show.panelThumb;
     const lines = [];
     if (c) {
+      const dated = (x) => [`${instalmentLabel(show, x.ep)} · ${langLabel(x.lang)} · `, el("span", { class: "bwl-date", text: relTime(x.at) }), el("span", { class: "bwl-muted", text: `  (${fmtDate(x.at)})` })];
+      const sameEp = !newest || newest.ep === c.ep;
       lines.push(el("div", { class: "bwl-line" }, [
         el("strong", { text: done ? "Latest: " : c.started ? "Continue: " : "Next: " }),
-        `${instalmentLabel(show, c.ep)} · ${langLabel(c.lang)} · `,
-        el("span", { class: "bwl-date", text: relTime(c.at) }),
-        el("span", { class: "bwl-muted", text: `  (${fmtDate(c.at)})` }),
+        ...(sameEp || done ? dated(c) : [`${instalmentLabel(show, c.ep)} · ${langLabel(c.lang)}`]),
       ]));
+      if (!done && !sameEp) lines.push(el("div", { class: "bwl-line" }, [el("strong", { text: "Newest: " }), ...dated(newest)]));
       if (!done && c.lang !== prefs.languages[0]) lines.push(el("div", { class: "bwl-muted", text: `No ${LOCALE_NAME[prefs.languages[0]] || prefs.languages[0]} audio for this episode yet` }));
       if (!done) lines.push(el("div", { class: "bwl-muted", text: `${show.unwatchedCount} unwatched episode${show.unwatchedCount === 1 ? "" : "s"}` + (show.inferredWatched ? ` · ${show.inferredWatched} earlier assumed watched` : "") }));
       if (done) lines.push(el("div", { class: "bwl-muted", text: "All caught up" }));
@@ -778,14 +786,24 @@
     // render flag emoji; other languages fall back to a text badge.
     const flagClass = c ? (FLAG_CLASS[c.lang] ? `bwl-flag bwl-lang-${FLAG_CLASS[c.lang]}` : "bwl-lang-other") : "";
     const hasFlag = flagClass.includes("bwl-flag");
-    return el("a", { class: "bwl-card" + (done ? " bwl-done" : ""), href }, [
+    const newAt = done ? null : (newest || c);
+    // The show title opens the series page. A link cannot nest inside the card's
+    // link, so it is a span that behaves like one (modifier keys open a new tab).
+    const openSeries = (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      if (ev.ctrlKey || ev.metaKey || ev.button === 1) window.open(seriesHref, "_blank"); else location.href = seriesHref;
+    };
+    const title = el("span", { class: "bwl-title bwl-series-link", role: "link", tabindex: "0", title: "Open the show's page", text: show.title,
+      onclick: openSeries, onauxclick: (ev) => { if (ev.button === 1) openSeries(ev); },
+      onkeydown: (ev) => { if (ev.key === "Enter") openSeries(ev); } });
+    return el("a", { class: "bwl-card" + (done ? " bwl-done" : ""), href, title: c ? `Play ${instalmentLabel(show, c.ep)}` : null }, [
       el("div", { class: "bwl-thumb" }, [
         thumb ? el("img", { src: thumb, loading: "lazy", alt: "" }) : null,
         c ? el("span", { class: `bwl-badge ${flagClass}`, title: langName(c.lang), "aria-label": langName(c.lang), text: hasFlag ? "" : langLabel(c.lang) }) : null,
-        !done && c && Date.now() - c.at < 7 * 86_400_000 ? el("span", { class: "bwl-badge bwl-new", text: "NEW" }) : null,
+        newAt && Date.now() - newAt.at < 7 * 86_400_000 ? el("span", { class: "bwl-badge bwl-new", text: "NEW" }) : null,
       ]),
       el("div", { class: "bwl-body" }, [
-        el("div", { class: "bwl-title", text: show.title }),
+        title,
         c && c.ep.title ? el("div", { class: "bwl-ep-title", text: c.ep.title }) : null,
         ...lines,
       ]),
